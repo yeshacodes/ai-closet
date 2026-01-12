@@ -1,0 +1,239 @@
+{
+  "outerwear": [
+    {
+      "id": "5becc0ab-fb68-4c93-8dbe-29ede9c4658c",
+      "created_at": "2026-01-05T20:01:33.257264+00:00",
+      "name": "Blue Denim Outerwear",
+      "category": "Outerwear",
+      "color": "Blue",
+      "style": "Casual",
+      "tags": [
+        "Outerwear",
+        "Casual",
+        "Party / Dressy",
+        "Rainy",
+        "Cold",
+        "Snowy",
+        "Blue"
+      ],
+      "image_url": "https://vuahhypgwdkgporyogol.supabase.co/storage/v1/object/public/closet/0.18211223661053688.png",
+      "description": "",
+      "styles": [
+        "Casual",
+        "Party / Dressy"
+      ],
+      "weather_suitability": [],
+      "weather": [
+        "Rainy",
+        "Cold",
+        "Snowy"
+      ]
+    },
+    {
+      "id": "2bbc6dc3-a673-4158-9017-1539c1f8cd5e",
+      "created_at": "2026-01-05T20:19:51.701023+00:00",
+      "name": "Black Windcheater",
+      "category": "Outerwear",
+      "color": "Black",
+      "style": "Casual",
+      "tags": [
+        "Outerwear",
+        "Casual",
+        "Streetwear",
+        "Rainy",
+        "Cold",
+        "Snowy",
+        "Black"
+      ],
+      "image_url": "https://vuahhypgwdkgporyogol.supabase.co/storage/v1/object/public/closet/0.015825878611569255.JPG",
+      "description": "",
+      "styles": [
+        "Casual",
+        "Streetwear"
+      ],
+      "weather_suitability": [],
+      "weather": [
+        "Rainy",
+        "Cold",
+        "Snowy"
+      ]
+    },
+    {
+      "id": "664e33b2-4487-4d2a-ad00-087d4d52b04b",
+      "created_at": "2026-01-05T20:20:42.345182+00:00",
+      "name": "Blue Jacket",
+      "category": "Outerwear",
+      "color": "Blue",
+      "style": "Casual",
+      "tags": [
+        "Outerwear",
+        "Casual",
+        "Streetwear",
+        "Sporty / Athleisure",
+        "Rainy",
+        "Cold",
+        "Snowy",
+        "Blue"
+      ],
+      "image_url": "https://vuahhypgwdkgporyogol.supabase.co/storage/v1/object/public/closet/0.16338299851072768.png",
+      "description": "",
+      "styles": [
+        "Casual",
+        "Streetwear",
+        "Sporty / Athleisure"
+      ],
+      "weather_suitability": [],
+      "weather": [
+        "Rainy",
+        "Cold",
+        "Snowy"
+      ]
+    },
+    {
+      "id": "1813c3da-0e64-4681-b42e-e7282db7391f",
+      "created_at": "2026-01-05T20:21:30.455702+00:00",
+      "name": "Beige Coat",
+      "category": "Outerwear",
+      "color": "Beige",
+      "style": "Smart Casual",
+      "tags": [
+        "Outerwear",
+        "Smart Casual",
+        "Party / Dressy",
+        "Casual",
+        "Cold",
+        "Snowy",
+        "Beige"
+      ],
+      "image_url": "https://vuahhypgwdkgporyogol.supabase.co/storage/v1/object/public/closet/0.7353288614554585.png",
+      "description": "",
+      "styles": [
+        "Smart Casual",
+        "Party / Dressy",
+        "Casual"
+      ],
+      "weather_suitability": [],
+      "weather": [
+        "Cold",
+        "Snowy"
+      ]
+    },
+    {
+      "id": "e8dcb9a0-778c-4caa-93cf-97c707fa5c56",
+      "created_at": "2026-01-05T20:21:55.440467+00:00",
+      "name": "Black Blazer",
+      "category": "Outerwear",
+      "color": "Black",
+      "style": "Smart Casual",
+      "tags": [
+        "Outerwear",
+        "Smart Casual",
+        "Formal",
+        "Cold",
+        "Rainy",
+        "Black"
+      ],
+      "image_url": "https://vuahhypgwdkgporyogol.supabase.co/storage/v1/object/public/closet/0.5345776217139508.png",
+      "description": "",
+      "styles": [
+        "Smart Casual",
+        "Formal"
+      ],
+      "weather_suitability": [],
+      "weather": [
+        "Cold",
+        "Rainy"
+      ]
+    },
+    {
+      "id": "c9668f68-b956-4da2-86ed-a2a0df786b2d",
+      "created_at": "2026-01-05T20:23:50.87666+00:00",
+      "name": "Beige Blazer",
+      "category": "Outerwear",
+      "color": "Beige",
+      "style": "Smart Casual",
+      "tags": [
+        "Outerwear",
+        "Smart Casual",
+        "Formal",
+        "Rainy",
+        "Cold",
+        "Snowy",
+        "Beige"
+      ],
+      "image_url": "https://vuahhypgwdkgporyogol.supabase.co/storage/v1/object/public/closet/0.7593699161752173.png",
+      "description": "",
+      "styles": [
+        "Smart Casual",
+        "Formal"
+      ],
+      "weather_suitability": [],
+      "weather": [
+        "Rainy",
+        "Cold",
+        "Snowy"
+      ]
+    },
+    {
+      "id": "5423ba30-7687-4e9a-bc29-0aabd3de8bbf",
+      "created_at": "2026-01-05T20:27:09.314676+00:00",
+      "name": "Brown coat jacket",
+      "category": "Outerwear",
+      "color": "Black",
+      "style": "Smart Casual",
+      "tags": [
+        "Outerwear",
+        "Smart Casual",
+        "Casual",
+        "Party / Dressy",
+        "Cold",
+        "Snowy",
+        "Black"
+      ],
+      "image_url": "https://vuahhypgwdkgporyogol.supabase.co/storage/v1/object/public/closet/0.7822571515236332.png",
+      "description": "",
+      "styles": [
+        "Smart Casual",
+        "Casual",
+        "Party / Dressy"
+      ],
+      "weather_suitability": [],
+      "weather": [
+        "Cold",
+        "Snowy"
+      ]
+    },
+    {
+      "id": "200176dd-7904-468b-b583-ded37de9ef50",
+      "created_at": "2026-01-05T20:30:55.254029+00:00",
+      "name": "Black coat",
+      "category": "Outerwear",
+      "color": "Black",
+      "style": "Smart Casual",
+      "tags": [
+        "Outerwear",
+        "Smart Casual",
+        "Party / Dressy",
+        "Casual",
+        "Streetwear",
+        "Cold",
+        "Snowy",
+        "Black"
+      ],
+      "image_url": "https://vuahhypgwdkgporyogol.supabase.co/storage/v1/object/public/closet/0.5142572772642658.png",
+      "description": "",
+      "styles": [
+        "Smart Casual",
+        "Party / Dressy",
+        "Casual",
+        "Streetwear"
+      ],
+      "weather_suitability": [],
+      "weather": [
+        "Cold",
+        "Snowy"
+      ]
+    }
+  ],
+  "total": 58
+}
