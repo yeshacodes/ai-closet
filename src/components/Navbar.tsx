@@ -7,12 +7,14 @@ import { Shirt, Upload, Sparkles, Menu, X, Activity } from "lucide-react"
 import { useState } from "react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
+import { Info } from "lucide-react";
 
 const navItems = [
     { name: "My Wardrobe", href: "/wardrobe", icon: Shirt },
     { name: "Upload Item", href: "/upload", icon: Upload },
     { name: "Outfit Generator", href: "/generator", icon: Sparkles },
     { name: "Evaluation", href: "/evaluation", icon: Activity },
+    { name: "About", href: "/about", icon: Info },
 ]
 
 export function Navbar() {
