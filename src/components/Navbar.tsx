@@ -10,11 +10,11 @@ import { Button } from "@/components/ui/button"
 import { Info } from "lucide-react";
 
 const navItems = [
+    { name: "About", href: "/about", icon: Info },
     { name: "My Wardrobe", href: "/wardrobe", icon: Shirt },
     { name: "Upload Item", href: "/upload", icon: Upload },
     { name: "Outfit Generator", href: "/generator", icon: Sparkles },
     { name: "Evaluation", href: "/evaluation", icon: Activity },
-    { name: "About", href: "/about", icon: Info },
 ]
 
 export function Navbar() {
