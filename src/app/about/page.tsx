@@ -91,9 +91,6 @@ export default function AboutPage() {
             metadata you submit are saved to the project’s Supabase backend to support
             persistence and retrieval.
           </p>
-          <p className="mt-3 text-sm leading-relaxed text-white/70">
-            If you want, you can add an in-app option to delete wardrobe data from Supabase.
-          </p>
         </div>
       </div>
 
