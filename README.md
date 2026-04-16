@@ -1,36 +1,111 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# 👗 AI Closet — Smart Outfit Recommendation System
 
-## Getting Started
+🚀 A full-stack outfit recommendation app that suggests personalized clothing combinations using attribute-based logic and user feedback.
 
-First, run the development server:
+---
 
-```bash
+## 💡 Overview
+
+AI Closet helps users decide what to wear by generating outfit combinations from their wardrobe.
+
+The system uses structured attributes (category, color, style) and a scoring mechanism to generate recommendations. It continuously improves suggestions by learning from user feedback.
+
+---
+
+## ✨ Features
+
+* 👕 Add and manage wardrobe items
+* 🎨 Attribute-based outfit generation (color, category, style)
+* 🤖 Smart outfit recommendations
+* 👍👎 Feedback system to refine suggestions
+* 📊 Evaluation dashboard for recommendation performance
+* 🔄 Adaptive scoring system based on user preferences
+
+---
+
+## 🛠️ Tech Stack
+
+**Frontend:** React, TypeScript, Next.js
+**Backend / API:** Next.js API Routes
+**Database:** Supabase
+**UI Components:** Custom components + modern UI design
+
+---
+
+## 🧠 How It Works
+
+1. Users add clothing items with attributes (type, color, style)
+2. The system generates outfit combinations
+3. Each outfit is scored based on matching rules
+4. Users provide feedback (like/dislike)
+5. Scores are adjusted to improve future recommendations
+
+---
+
+## 📸 Demo
+
+> A look at AI Closet in action:
+
+### 👕 Wardrobe & Item Management
+
+<img width="2675" height="1461" alt="image" src="https://github.com/user-attachments/assets/37364962-5b7f-4edc-af31-450787c60dee" />
+
+
+---
+
+### 🤖 Outfit Generation
+
+<img width="2531" height="1441" alt="image" src="https://github.com/user-attachments/assets/92c94028-914d-4adc-a002-528cb4af2733" />
+
+
+---
+
+### 👍 Feedback System
+
+User feedback influences future recommendations through score adjustments.
+
+<img width="2323" height="1126" alt="image" src="https://github.com/user-attachments/assets/32201c77-0069-402c-b176-90d67503ac7b" />
+
+<img width="1486" height="590" alt="image" src="https://github.com/user-attachments/assets/05c5d58d-fefd-44f0-bcfd-309c4be76153" />
+
+---
+
+### 📊 Evaluation Dashboard
+
+Tracks performance metrics like likes and recommendation success rate.
+
+<img width="2574" height="1290" alt="image" src="https://github.com/user-attachments/assets/b59d094e-584e-4a39-af4e-f6713ddbe8d5" />
+
+
+---
+
+## 💡 Why This Project?
+
+* Demonstrates **recommendation system design**
+* Combines **full-stack development + personalization logic**
+* Implements **feedback-driven learning system**
+* Simulates real-world product behavior (fashion apps)
+
+---
+
+## ⚙️ Run Locally
+
+```bash id="runcloset2"
+# Install dependencies
+npm install
+
+# Run development server
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+---
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## 👩‍💻 Author
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+**Yesha Bhavsar**
+Computer Science @ Kennesaw State University
 
-## Learn More
+---
 
-To learn more about Next.js, take a look at the following resources:
+⭐️ Built to explore personalization, recommendation systems, and user-driven learning
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
