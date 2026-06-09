@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button"
 import { Select } from "@/components/ui/select"
 import { Card, CardContent } from "@/components/ui/card"
 import { Loader } from "@/components/ui/loader"
-import { HybridRecommender, Outfit } from "@/lib/recommender"
+import { HybridRecommender, Outfit, PreferenceProfile, Preferences } from "@/lib/recommender"
 
 const weathers = ["Sunny", "Rainy", "Cold", "Warm", "Snowy"]
 const occasions = ["Casual", "Smart Casual", "Formal", "Party / Dressy", "Sporty / Athleisure", "Streetwear"]
@@ -23,6 +23,7 @@ export default function GeneratorPage() {
     const [feedbackGiven, setFeedbackGiven] = useState(false)
 
     const [dislikedItemIds, setDislikedItemIds] = useState<Set<string>>(new Set())
+    const [preferenceProfile, setPreferenceProfile] = useState<PreferenceProfile | undefined>(undefined)
 
     const [preferences, setPreferences] = useState({
         weather: "Sunny",
@@ -33,14 +34,15 @@ export default function GeneratorPage() {
 
     useEffect(() => {
         fetchItems()
-        fetchDislikedItems()
     }, [])
 
     const fetchItems = async () => {
         try {
             const { data, error } = await supabase.from('items').select('*')
             if (error) throw error
-            setItems(data || [])
+            const wardrobeItems = data || []
+            setItems(wardrobeItems)
+            await fetchFeedbackProfile(wardrobeItems)
         } catch (error) {
             console.error('Error fetching items:', error)
         } finally {
@@ -48,23 +50,59 @@ export default function GeneratorPage() {
         }
     }
 
-    const fetchDislikedItems = async () => {
+    const fetchFeedbackProfile = async (wardrobeItems = items) => {
         try {
-            // Fetch items that were explicitly disliked (liked = false)
             const { data, error } = await supabase
                 .from('outfit_feedback')
-                .select('outerwear_id')
-                .eq('liked', false)
-                .not('outerwear_id', 'is', null)
+                .select('*')
 
             if (error) throw error
 
             if (data) {
-                const ids = new Set(data.map(item => item.outerwear_id))
-                setDislikedItemIds(ids)
+                const profile: PreferenceProfile = {
+                    likedColors: {},
+                    dislikedColors: {},
+                    likedStyles: {},
+                    dislikedStyles: {},
+                    likedCategories: {},
+                    dislikedCategories: {},
+                    likedItems: {},
+                    dislikedItems: {},
+                    likedCombinations: {},
+                    dislikedCombinations: {}
+                }
+                const dislikedOuterwear = new Set<string>()
+                const itemMap = new Map(wardrobeItems.map(item => [item.id, item]))
+                const add = (bucket: Record<string, number>, key?: string | null) => {
+                    if (!key) return
+                    bucket[key] = (bucket[key] || 0) + 1
+                }
+
+                for (const row of data) {
+                    if (typeof row.liked !== "boolean") continue
+                    const ids = [row.top_id, row.bottom_id, row.dress_id, row.footwear_id, row.outerwear_id].filter(Boolean) as string[]
+                    const rowItems = ids.map(id => itemMap.get(id)).filter(Boolean) as Item[]
+                    const liked = row.liked
+                    const buckets = liked
+                        ? { colors: profile.likedColors, styles: profile.likedStyles, categories: profile.likedCategories, items: profile.likedItems!, combinations: profile.likedCombinations }
+                        : { colors: profile.dislikedColors, styles: profile.dislikedStyles, categories: profile.dislikedCategories, items: profile.dislikedItems, combinations: profile.dislikedCombinations }
+
+                    for (const item of rowItems) {
+                        add(buckets.colors, item.color)
+                        add(buckets.categories, item.category)
+                        ;(item.styles?.length ? item.styles : [item.style]).forEach(style => add(buckets.styles, style))
+                        add(buckets.items, item.id)
+                    }
+                    if (row.requested_style) add(buckets.styles, row.requested_style)
+                    if (ids.length > 0) add(buckets.combinations, [...ids].sort().join("|"))
+                    if (!liked && row.outerwear_id) dislikedOuterwear.add(row.outerwear_id)
+                }
+
+                setPreferenceProfile(profile)
+                setDislikedItemIds(dislikedOuterwear)
             }
         } catch (error) {
-            console.error('Error fetching disliked items:', error)
+            console.error('Error fetching feedback profile:', error)
         }
     }
 
@@ -76,12 +114,13 @@ export default function GeneratorPage() {
 
         setTimeout(() => {
             try {
-                const prefs = {
-                    weather: preferences.weather,
-                    occasion: preferences.occasion,
-                    penalizedOuterwearIds: Array.from(dislikedItemIds)
+                const prefs: Preferences = {
+                    weather: preferences.weather as Preferences["weather"],
+                    occasion: preferences.occasion as Preferences["occasion"],
+                    penalizedOuterwearIds: Array.from(dislikedItemIds),
+                    preferenceProfile
                 }
-                const result = recommender.generateOutfit(items, prefs as any)
+                const result = recommender.generateOutfit(items, prefs)
 
                 if (!result.success) {
                     setError(result.error || "Failed to generate outfit.")
@@ -111,7 +150,13 @@ export default function GeneratorPage() {
             }
 
             // Prepare feedback data based on outfit type
-            const feedbackData: any = {
+            const personalizationFields: Record<string, unknown> = {
+                base_score_before_preferences: outfit.scoringDetails?.baseScoreBeforePreferences !== undefined ? outfit.scoringDetails.baseScoreBeforePreferences / 100 : null,
+                preference_adjustment: outfit.scoringDetails?.preferenceAdjustment ?? null,
+                final_score_after_preferences: outfit.scoringDetails?.finalScoreAfterPreferences !== undefined ? outfit.scoringDetails.finalScoreAfterPreferences / 100 : outfit.score
+            }
+
+            const feedbackData: Record<string, unknown> = {
                 footwear_id: outfit.footwear.id,
                 outerwear_id: outfit.outerwear?.id || null,
                 requested_style: preferences.occasion,
@@ -120,7 +165,8 @@ export default function GeneratorPage() {
                 features: outfit.features,
                 rule_score: outfit.ruleScore,
                 ml_score: outfit.mlScore,
-                final_score: outfit.score
+                final_score: outfit.score,
+                ...personalizationFields
             }
 
             if (outfit.type === 'separates') {
@@ -134,16 +180,34 @@ export default function GeneratorPage() {
 
             const { error } = await supabase.from('outfit_feedback').insert(feedbackData)
 
-            if (error) throw error
+            if (error) {
+                const message = error.message || ""
+                const isSchemaMismatch = message.includes("base_score_before_preferences") ||
+                    message.includes("preference_adjustment") ||
+                    message.includes("final_score_after_preferences") ||
+                    message.includes("schema cache")
+
+                if (!isSchemaMismatch) throw error
+
+                const fallbackFeedbackData = { ...feedbackData }
+                delete fallbackFeedbackData.base_score_before_preferences
+                delete fallbackFeedbackData.preference_adjustment
+                delete fallbackFeedbackData.final_score_after_preferences
+
+                const { error: fallbackError } = await supabase.from('outfit_feedback').insert(fallbackFeedbackData)
+                if (fallbackError) throw fallbackError
+            }
             setFeedbackGiven(true)
-        } catch (err: any) {
+            await fetchFeedbackProfile()
+        } catch (err: unknown) {
+            const errorInfo = err as { message?: string; details?: string; hint?: string; code?: string }
             console.error("Error saving feedback:", {
-                message: err.message,
-                details: err.details,
-                hint: err.hint,
-                code: err.code
+                message: errorInfo.message,
+                details: errorInfo.details,
+                hint: errorInfo.hint,
+                code: errorInfo.code
             })
-            alert(`Failed to save feedback: ${err.message || "Unknown error"}`)
+            alert(`Failed to save feedback: ${errorInfo.message || "Unknown error"}`)
         }
     }
 
@@ -241,6 +305,48 @@ export default function GeneratorPage() {
                                 )}
                             </div>
 
+                            {outfit.scoringDetails && (
+                                <div className="w-full max-w-2xl rounded-lg border border-white/10 bg-background/60 p-4 text-sm">
+                                    <p className="font-medium">Score Breakdown</p>
+                                    <p className="mt-1 text-xs text-muted-foreground">
+                                        Scores are recommendation confidence indicators, not absolute fashion ratings.
+                                    </p>
+                                    <div className="mt-3 grid grid-cols-1 gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+                                        <span>Rule Score: {outfit.scoringDetails.ruleScorePercent.toFixed(1)}%</span>
+                                        <span>Heuristic Match Confidence: {outfit.scoringDetails.mlScorePercent.toFixed(1)}%</span>
+                                        <span>Base Before Preferences: {outfit.scoringDetails.baseScoreBeforePreferences.toFixed(1)}%</span>
+                                        <span>Preference Adjustment: {outfit.scoringDetails.preferenceAdjustment >= 0 ? "+" : ""}{outfit.scoringDetails.preferenceAdjustment.toFixed(1)}</span>
+                                    </div>
+                                    <div className="mt-3 space-y-1 text-xs text-muted-foreground">
+                                        {outfit.scoringDetails.preferenceReasons.map(reason => (
+                                            <p key={reason}>{reason}</p>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                            {outfit.ruleEvaluation && (
+                                <div className="w-full max-w-2xl rounded-lg border border-white/10 bg-background/60 p-4 text-sm">
+                                    <p className="font-medium">Rule Evaluation</p>
+                                    <p className="mt-1 text-xs text-muted-foreground">
+                                        Points Awarded: {outfit.ruleEvaluation.pointsAwarded} / {outfit.ruleEvaluation.pointsPossible}
+                                    </p>
+                                    <div className="mt-3 grid grid-cols-1 gap-4 text-xs text-muted-foreground md:grid-cols-2">
+                                        <div>
+                                            <p className="font-medium text-foreground">Passed Rules</p>
+                                            {outfit.ruleEvaluation.passedRules.map(rule => (
+                                                <p key={rule.name}>+{rule.points} {rule.name}: {rule.explanation}</p>
+                                            ))}
+                                        </div>
+                                        <div>
+                                            <p className="font-medium text-foreground">Failed Rules</p>
+                                            {outfit.ruleEvaluation.failedRules.length > 0 ? outfit.ruleEvaluation.failedRules.map(rule => (
+                                                <p key={rule.name}>-{rule.pointsLost} {rule.name}: {rule.explanation}</p>
+                                            )) : <p>No failed scoring rules.</p>}
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
                             {!feedbackGiven ? (
                                 <div className="flex gap-4">
                                     <Button
@@ -264,7 +370,7 @@ export default function GeneratorPage() {
                                     animate={{ opacity: 1, scale: 1 }}
                                     className="text-green-600 font-medium"
                                 >
-                                    Thanks for your feedback! We'll learn from this.
+                                    Thanks for your feedback! We&apos;ll learn from this.
                                 </motion.div>
                             )}
                         </div>
@@ -294,8 +400,8 @@ function OutfitCard({ item, label }: { item: Item | null, label: string }) {
         >
             <div className="text-center font-medium text-muted-foreground uppercase tracking-wider text-xs">{label}</div>
             <Card className="overflow-hidden h-full">
-                <div className="aspect-[3/4] relative bg-muted">
-                    <img src={item.image_url} alt={item.name} className="object-cover w-full h-full" />
+                <div className="h-64 md:h-72 relative bg-muted/60 flex items-center justify-center">
+                    <img src={item.image_url} alt={item.name} className="object-contain w-full h-full p-3" />
                 </div>
                 <CardContent className="p-4">
                     <h3 className="font-semibold">{item.name}</h3>

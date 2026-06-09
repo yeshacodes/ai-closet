@@ -1,7 +1,6 @@
 "use client"
 
 import { useState, useRef } from "react"
-import { motion } from "framer-motion"
 import { Upload, X, Sparkles } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { supabase } from "@/lib/supabase"
@@ -11,11 +10,31 @@ import { Select } from "@/components/ui/select"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Loader } from "@/components/ui/loader"
 import { predictItemDetails } from "@/utils/heuristics"
+import { CLOSET_CATEGORIES } from "@/lib/categories"
 
-const categories = ["Top", "Bottom", "Dress", "Shorts/Skirts", "Footwear", "Outerwear", "Accessory"]
+const categories = [...CLOSET_CATEGORIES]
 const stylesList = ["Casual", "Smart Casual", "Formal", "Party / Dressy", "Sporty / Athleisure", "Streetwear"]
 const weatherOptions = ["Sunny", "Rainy", "Cold", "Warm", "Snowy"]
 const colors = ["Black", "White", "Blue", "Red", "Green", "Yellow", "Pink", "Purple", "Beige", "Grey", "Brown", "Orange", "Navy", "Maroon", "Teal", "Olive"]
+
+type AiStyleSuggestion = {
+    suggestedStyles: string[]
+    styleReasoning: string
+    styleConfidence: number
+}
+
+type PredictionLogData = {
+    source?: string
+    name?: string
+    category?: string
+    color?: string
+    styles?: string[]
+    confidence?: number
+    vision_label?: string
+    vision_confidence?: number
+    heuristic_color?: string
+    detected_color?: string
+}
 
 export default function UploadPage() {
     const router = useRouter()
@@ -24,9 +43,11 @@ export default function UploadPage() {
     const [loading, setLoading] = useState(false)
     const [simulatingAI, setSimulatingAI] = useState(false)
     const [aiNote, setAiNote] = useState<string | null>(null)
+    const [aiStyleSuggestion, setAiStyleSuggestion] = useState<AiStyleSuggestion | null>(null)
+    const [weatherReasoning, setWeatherReasoning] = useState<string | null>(null)
 
     // Store prediction for logging
-    const predictionRef = useRef<any>(null)
+    const predictionRef = useRef<PredictionLogData | null>(null)
 
     const [formData, setFormData] = useState({
         name: "",
@@ -48,6 +69,8 @@ export default function UploadPage() {
             // Reset prediction when file changes
             predictionRef.current = null
             setAiNote(null)
+            setAiStyleSuggestion(null)
+            setWeatherReasoning(null)
         }
     }
 
@@ -58,6 +81,8 @@ export default function UploadPage() {
         setUploadedPath(null)
         predictionRef.current = null
         setAiNote(null)
+        setAiStyleSuggestion(null)
+        setWeatherReasoning(null)
     }
 
     const handleSmartAI = async () => {
@@ -105,7 +130,7 @@ export default function UploadPage() {
                 try {
                     const data = JSON.parse(text);
                     msg = data.error || data.message || msg;
-                } catch (e) {
+                } catch {
                     // Not JSON, keep text as msg
                 }
                 console.error("AI API error response:", msg);
@@ -115,7 +140,7 @@ export default function UploadPage() {
             let aiData;
             try {
                 aiData = JSON.parse(text);
-            } catch (e) {
+            } catch {
                 console.error("Failed to parse AI successful response as JSON:", text);
                 throw new Error("Invalid response from AI server (not JSON)");
             }
@@ -127,9 +152,22 @@ export default function UploadPage() {
                 name: prev.name || aiData.name,
                 category: prev.category || aiData.category,
                 color: prev.color || aiData.color,
-                styles: [...new Set([...prev.styles, ...aiData.styles])],
                 weather: [...new Set([...prev.weather, ...aiData.weather])]
             }))
+
+            const styleSuggestionAvailable = Array.isArray(aiData.suggestedStyles) &&
+                aiData.suggestedStyles.length > 0 &&
+                typeof aiData.styleConfidence === "number" &&
+                aiData.styleConfidence >= 0.45
+
+            setAiStyleSuggestion(styleSuggestionAvailable
+                ? {
+                    suggestedStyles: aiData.suggestedStyles.slice(0, 3),
+                    styleReasoning: aiData.styleReasoning || "Suggested from the garment's visible style and formality.",
+                    styleConfidence: aiData.styleConfidence
+                }
+                : null)
+            setWeatherReasoning(aiData.weatherReasoning || null)
 
             // Check if custom color needed
             if (aiData.color && !colors.includes(aiData.color)) {
@@ -159,9 +197,10 @@ export default function UploadPage() {
                 ...prev,
                 name: prev.name || heuristicResult.name || "",
                 category: prev.category || heuristicResult.category || "",
-                color: prev.color || heuristicResult.color || "",
-                styles: [...new Set([...prev.styles, ...(heuristicResult.styles || [])])]
+                color: prev.color || heuristicResult.color || ""
             }))
+            setAiStyleSuggestion(null)
+            setWeatherReasoning(null)
 
             if (heuristicResult.color && !colors.includes(heuristicResult.color)) {
                 setIsCustomColor(true)
@@ -194,6 +233,14 @@ export default function UploadPage() {
                 : [...prev.weather, option]
             return { ...prev, weather: newWeather }
         })
+    }
+
+    const applySuggestedStyles = () => {
+        if (!aiStyleSuggestion) return
+        setFormData(prev => ({
+            ...prev,
+            styles: [...new Set([...prev.styles, ...aiStyleSuggestion.suggestedStyles])]
+        }))
     }
 
     const handleSubmit = async (e: React.FormEvent) => {
@@ -239,9 +286,9 @@ export default function UploadPage() {
             if (dbError) {
                 console.error('Supabase insert error:', {
                     message: dbError.message,
-                    details: (dbError as any).details,
-                    hint: (dbError as any).hint,
-                    code: (dbError as any).code,
+                    details: dbError.details,
+                    hint: dbError.hint,
+                    code: dbError.code,
                 });
                 throw dbError;
             }
@@ -272,9 +319,9 @@ export default function UploadPage() {
                 if (logError) {
                     console.error('Supabase logging error:', {
                         message: logError.message,
-                        details: (logError as any).details,
-                        hint: (logError as any).hint,
-                        code: (logError as any).code,
+                        details: logError.details,
+                        hint: logError.hint,
+                        code: logError.code,
                     });
                 }
             }
@@ -356,6 +403,33 @@ export default function UploadPage() {
                                 {aiNote && (
                                     <p className="text-xs text-center text-muted-foreground flex items-center justify-center gap-1">
                                         <Sparkles className="h-3 w-3" /> {aiNote}
+                                    </p>
+                                )}
+                                {aiStyleSuggestion && (
+                                    <div className="rounded-lg border border-white/10 bg-secondary/20 p-4 text-sm">
+                                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                            <div>
+                                                <p className="font-medium">AI Suggested Styles</p>
+                                                <div className="mt-2 flex flex-wrap gap-2">
+                                                    {aiStyleSuggestion.suggestedStyles.map(style => (
+                                                        <span key={style} className="rounded-full bg-background px-3 py-1 text-xs text-muted-foreground">
+                                                            {style}
+                                                        </span>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                            <Button type="button" variant="outline" onClick={applySuggestedStyles}>
+                                                Apply Suggested Styles
+                                            </Button>
+                                        </div>
+                                        <p className="mt-3 text-xs text-muted-foreground">
+                                            {aiStyleSuggestion.styleReasoning}
+                                        </p>
+                                    </div>
+                                )}
+                                {weatherReasoning && (
+                                    <p className="text-xs text-center text-muted-foreground">
+                                        {weatherReasoning}
                                     </p>
                                 )}
                             </div>

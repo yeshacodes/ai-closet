@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
 import { z } from "zod";
+import { CLOSET_CATEGORIES, normalizeClosetCategory } from "@/lib/categories";
 
 // Initialize OpenAI client
 const openai = new OpenAI({
@@ -8,7 +9,7 @@ const openai = new OpenAI({
 });
 
 // Strict validation schema matching App enums
-const CategoryEnum = z.enum(["Top", "Bottom", "Dress", "Shorts/Skirts", "Footwear", "Outerwear", "Accessory"]);
+const CategoryEnum = z.enum(CLOSET_CATEGORIES);
 const StyleEnum = z.enum(["Casual", "Smart Casual", "Formal", "Party / Dressy", "Sporty / Athleisure", "Streetwear"]);
 const WeatherEnum = z.enum(["Sunny", "Rainy", "Cold", "Warm", "Snowy"]);
 
@@ -17,7 +18,12 @@ const predictSchema = z.object({
     category: CategoryEnum,
     color: z.string(),
     styles: z.array(StyleEnum),
+    suggestedStyles: z.array(StyleEnum).max(3),
+    styleReasoning: z.string(),
+    styleConfidence: z.number().min(0).max(1),
     weather: z.array(WeatherEnum),
+    weatherReasoning: z.string(),
+    weatherConfidence: z.number().min(0).max(1),
     confidence: z.number().min(0).max(1),
     reasoning_tags: z.array(z.string())
 });
@@ -49,9 +55,14 @@ export async function POST(req: NextRequest) {
                             text: `You are an expert fashion consultant. Analyze the clothing image provided and return accurate attributes in JSON format.
                     
                     STRICT RULES:
-                    1. Use ONLY the following categories: "Top", "Bottom", "Dress", "Shorts/Skirts", "Footwear", "Outerwear", "Accessory".
-                    2. Use ONLY the following styles: "Casual", "Smart Casual", "Formal", "Party / Dressy", "Sporty / Athleisure", "Streetwear".
-                    3. Use ONLY the following weather: "Sunny", "Rainy", "Snowy", "Cold", "Warm".
+                    1. Use ONLY the following categories: ${CLOSET_CATEGORIES.map(c => `"${c}"`).join(", ")}.
+                    2. category rules: T-shirts -> "T-Shirt"; hoodies -> "Hoodie"; sweaters/knits -> "Sweater"; blouses/tanks/camisoles/lace tops/crop tops -> "Top"; jeans -> "Jeans"; trousers -> "Pants"; leggings -> "Leggings"; shorts or skirts -> "Shorts/Skirts"; jackets/coats/blazers/cardigans -> "Outerwear"; shoes -> "Footwear"; accessories/bags/jewelry/hats/scarves -> "Accessory".
+                    3. Use ONLY the following styles: "Casual", "Smart Casual", "Formal", "Party / Dressy", "Sporty / Athleisure", "Streetwear".
+                    4. Return suggestedStyles as up to 3 likely style tags, but these are suggestions only. Use garment type, fabric, silhouette, visual appearance, and formality.
+                    5. styleReasoning should explain why those styles are likely. styleConfidence should be 0-1.
+                    6. Use ONLY the following weather: "Sunny", "Rainy", "Snowy", "Cold", "Warm".
+                    7. Weather rules: hoodies/sweaters/jackets/coats/sweatshirts/heavy knits -> Cold; rain jackets/waterproof outerwear/boots -> Rainy; t-shirts/tanks/shorts/skirts/light dresses/breathable tops/lace sleeveless tops -> Warm or Sunny; sandals -> Sunny/Warm; sneakers -> Warm/Sunny unless clearly winter/rain footwear. Do not default to Warm if uncertain; return [] for weather when low confidence.
+                    8. weatherReasoning should explain the selected weather tags. weatherConfidence should be 0-1.
                     4. color MUST be one of these exact values: Black, White, Grey, Beige, Brown, Navy, Blue, Red, Pink, Green, Yellow, Orange, Purple, Maroon, Teal, Olive. (Choose the closest color).
                     5. name must be a 2-5 word description in the format: "<Color> <ItemType>" (e.g., "Pink Puffer Jacket", "Navy Blue Polo").
                     6. Confidence should be a float between 0 and 1.
@@ -94,9 +105,9 @@ export async function POST(req: NextRequest) {
 
             const jsonText = content.slice(start, end + 1);
             rawData = JSON.parse(jsonText);
-        } catch (e: any) {
+        } catch (e: unknown) {
             console.error("[AI Parsing Error]:", content);
-            throw new Error(e.message || "AI returned invalid JSON");
+            throw new Error(e instanceof Error ? e.message : "AI returned invalid JSON");
         }
 
         // Log raw data for dev debugging
@@ -160,7 +171,7 @@ export async function POST(req: NextRequest) {
         }
 
         const finalCategory = typeof rawData.category === "string"
-            ? rawData.category.trim()
+            ? normalizeClosetCategory(rawData.category.trim())
             : "Top";
 
         let finalName = typeof rawData.name === "string" && rawData.name.trim()
@@ -182,12 +193,29 @@ export async function POST(req: NextRequest) {
                 : typeof rawData.styles === "string"
                     ? [rawData.styles]
                     : [],
+            suggestedStyles: Array.isArray(rawData.suggestedStyles)
+                ? rawData.suggestedStyles.slice(0, 3)
+                : Array.isArray(rawData.styles)
+                    ? rawData.styles.slice(0, 3)
+                    : [],
+            styleReasoning: typeof rawData.styleReasoning === "string"
+                ? rawData.styleReasoning
+                : "Suggested from the garment's visible formality, silhouette, and material.",
+            styleConfidence: typeof rawData.styleConfidence === "number"
+                ? rawData.styleConfidence
+                : finalConfidence,
 
             weather: Array.isArray(rawData.weather)
                 ? rawData.weather
                 : typeof rawData.weather === "string"
                     ? [rawData.weather]
                     : [],
+            weatherReasoning: typeof rawData.weatherReasoning === "string"
+                ? rawData.weatherReasoning
+                : "Weather tags were inferred from garment type, coverage, and visible material.",
+            weatherConfidence: typeof rawData.weatherConfidence === "number"
+                ? rawData.weatherConfidence
+                : finalConfidence,
 
             confidence: finalConfidence,
 
@@ -210,8 +238,8 @@ export async function POST(req: NextRequest) {
 
         return NextResponse.json(validatedData.data);
 
-    } catch (error: any) {
+    } catch (error: unknown) {
         console.error("[AI Predict Error]:", error);
-        return NextResponse.json({ error: error.message || "Failed to analyze image" }, { status: 500 });
+        return NextResponse.json({ error: error instanceof Error ? error.message : "Failed to analyze image" }, { status: 500 });
     }
 }

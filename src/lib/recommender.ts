@@ -1,3 +1,4 @@
+import { getCategoryGroup } from "@/lib/categories";
 import { Item } from "@/types"
 
 // ============================================================================
@@ -27,9 +28,12 @@ type OutfitBase = {
     footwear: Item;
     outerwear?: Item;
     accessory?: Item;
+    outerwearDebug?: OuterwearSelectionDebug;
     score: number;
     ruleScore: number;
     mlScore?: number;
+    scoringDetails?: ScoringDetails;
+    ruleEvaluation?: RuleEvaluationDetails;
     features: number[];
 }
 
@@ -63,6 +67,66 @@ export type Preferences = {
     occasion: StyleType;
     favoriteColor?: string;
     penalizedOuterwearIds?: string[];
+    recentKeyItemIds?: string[];
+    preferenceProfile?: PreferenceProfile;
+}
+
+export type ScoringDetails = {
+    ruleScoreRaw: number;
+    ruleScoreMax: number;
+    ruleScorePercent: number;
+    mlScorePercent: number;
+    rotationPenalty: number;
+    weatherPenalty: number;
+    feedbackAdjustment: number;
+    preferenceAdjustment: number;
+    preferenceReasons: string[];
+    randomAdjustment: number;
+    baseScoreBeforePreferences: number;
+    finalScoreAfterPreferences: number;
+    finalScore: number;
+    finalScoreFormulaSummary: string;
+}
+
+export type PassedRule = {
+    name: string;
+    points: number;
+    explanation: string;
+}
+
+export type FailedRule = {
+    name: string;
+    pointsLost: number;
+    explanation: string;
+}
+
+export type NotApplicableRule = {
+    name: string;
+    explanation: string;
+}
+
+export type RuleEvaluationDetails = {
+    passedRules: PassedRule[];
+    failedRules: FailedRule[];
+    notApplicableRules: NotApplicableRule[];
+    rulesPassed: number;
+    rulesFailed: number;
+    pointsAwarded: number;
+    pointsPossible: number;
+    pointsLost: number;
+}
+
+export type PreferenceProfile = {
+    likedColors: Record<string, number>;
+    dislikedColors: Record<string, number>;
+    likedStyles: Record<string, number>;
+    dislikedStyles: Record<string, number>;
+    likedCategories: Record<string, number>;
+    dislikedCategories: Record<string, number>;
+    likedItems?: Record<string, number>;
+    dislikedItems: Record<string, number>;
+    likedCombinations: Record<string, number>;
+    dislikedCombinations: Record<string, number>;
 }
 
 /**
@@ -91,17 +155,109 @@ type OutfitHistory = {
     recentOuterwearIds: string[];  // Outerwear ID
 }
 
+type PreferencesWithLegacyStyle = Preferences & {
+    style?: string;
+}
+
+type OuterwearCandidateDebug = {
+    id: string;
+    name: string;
+    score: number;
+    reasons: string[];
+}
+
+type OuterwearSelectionDebug = {
+    candidateOptions: OuterwearCandidateDebug[];
+    selectedOuterwearId?: string;
+    selectedOuterwearName?: string;
+    reasonSelected: string;
+}
+
 const HISTORY_KEY = "aiCloset_outfit_history_v1";
+const RULE_SCORE_MAX = 17;
+const RULE_SCORE_WEIGHT = 0.7;
+const ML_SCORE_WEIGHT = 0.3;
+
+function clampPercent(value: number): number {
+    return Math.max(0, Math.min(100, value));
+}
+
+function toPercent(value: number, max: number): number {
+    if (max <= 0) return 0;
+    return clampPercent((value / max) * 100);
+}
+
+export function calculateScoringDetails({
+    ruleScoreRaw,
+    mlScorePercent,
+    rotationPenalty = 0,
+    weatherPenalty = 0,
+    feedbackAdjustment = 0,
+    preferenceAdjustment = 0,
+    preferenceReasons = [],
+    randomAdjustment = 0
+}: {
+    ruleScoreRaw: number;
+    mlScorePercent: number;
+    rotationPenalty?: number;
+    weatherPenalty?: number;
+    feedbackAdjustment?: number;
+    preferenceAdjustment?: number;
+    preferenceReasons?: string[];
+    randomAdjustment?: number;
+}): ScoringDetails {
+    const ruleScorePercent = toPercent(ruleScoreRaw, RULE_SCORE_MAX);
+    const boundedMlScorePercent = clampPercent(mlScorePercent);
+    const weightedBase =
+        (RULE_SCORE_WEIGHT * ruleScorePercent) +
+        (ML_SCORE_WEIGHT * boundedMlScorePercent);
+    const baseScoreBeforePreferences = clampPercent(
+        weightedBase +
+        rotationPenalty +
+        weatherPenalty +
+        feedbackAdjustment +
+        randomAdjustment
+    );
+    const finalScore = clampPercent(baseScoreBeforePreferences + preferenceAdjustment);
+
+    return {
+        ruleScoreRaw,
+        ruleScoreMax: RULE_SCORE_MAX,
+        ruleScorePercent,
+        mlScorePercent: boundedMlScorePercent,
+        rotationPenalty,
+        weatherPenalty,
+        feedbackAdjustment,
+        preferenceAdjustment,
+        preferenceReasons,
+        randomAdjustment,
+        baseScoreBeforePreferences,
+        finalScoreAfterPreferences: finalScore,
+        finalScore,
+        finalScoreFormulaSummary: "Final Score = clamp((70% * Rule Score %) + (30% * Heuristic Match Confidence %) + explicit adjustments, 0, 100)"
+    };
+}
 
 // ============================================================================
 // MAIN RECOMMENDER CLASS
 // ============================================================================
 
 export class HybridRecommender {
-    // Logistic Regression Weights for ML scoring
-    // Features: [styleMatchCount, neutralCount, hasContrast, weatherMatch, hasOuterwear, isDress]
-    private weights = [0.8, 0.3, 0.5, 0.6, 0.5, 0.4];
-    private bias = -2.0;
+    // Deterministic heuristic confidence weights. This is not a trained ML model.
+    private heuristicWeights = {
+        styleCoverage: 8,
+        colorHarmonyQuality: 18,
+        weatherQuality: 16,
+        categoryCompleteness: 2,
+        neutralRatio: 1,
+        hasContrast: 13,
+        outerwearFit: 7,
+        isDress: -10,
+        recentKeyPenalty: -8,
+        feedbackPenalty: -8
+    };
+    private weights = [0, 0, 0, 0, 0, 0];
+    private bias = 0;
 
     // Captured during partitioning for second-pass attachment
     private lastPartitionedAccessories: Item[] = [];
@@ -134,7 +290,7 @@ export class HybridRecommender {
             const cat = (i.category || "").toLowerCase();
             return cat === "outerwear" || cat === "jacket" || cat === "coat" || cat.includes("jacket") || cat.includes("coat");
         });
-        const targetStyle = preferences.occasion || (preferences as any).style || "";
+        const targetStyle = preferences.occasion || (preferences as PreferencesWithLegacyStyle).style || "";
         console.log(`[Filter Audit] Target Style: "${targetStyle}", Weather: "${preferences.weather}"`);
         console.log(`[Filter Audit] Potential Outerwear in Wardrobe: ${allOuterInWardrobe.length}`);
         allOuterInWardrobe.forEach(o => {
@@ -222,11 +378,35 @@ export class HybridRecommender {
 
         const scored = this.scoreAndRank(styleFiltered, preferences, history, eligibleOuterCount, nonShortBottomsCount);
 
-        // 8. Select Finalists (Weighted Top-K with Diversity Fallback)
-        const baseFinalists = this.selectDiverseFinalists(scored, history, eligibleOuterCount);
+        // Preliminary scoring only limits combinatorics. Final scoring happens after
+        // outerwear/accessory attachment so features and explanations match the UI.
+        const baseCandidatePool = scored
+            .filter(candidate => candidate.score > -999)
+            .slice(0, 250);
+        const assembledCandidatePool = this.attachOuterwearToFinalists(baseCandidatePool, partitioned.outerwear, preferences, history);
+        const allFinalScoredCandidates = this.rescoreFinalOutfits(assembledCandidatePool, preferences, history, nonShortBottomsCount)
+            .sort((a, b) => b.score - a.score);
+        const repeatSafeFinalCandidates = allFinalScoredCandidates
+            .filter(candidate => !history.recentFullOutfitIds.includes(this.getFullId(candidate)));
+        const finalScoredCandidates = repeatSafeFinalCandidates.length > 0
+            ? repeatSafeFinalCandidates
+            : allFinalScoredCandidates;
 
-        // 9. Attach Outerwear (Pass 2 - Batch Uniqueness Guaranteed)
-        const finalists = this.attachOuterwearToFinalists(baseFinalists, partitioned.outerwear, preferences, history);
+        const finalists = this.selectDiverseFinalists(finalScoredCandidates, history, eligibleOuterCount)
+            .sort((a, b) => b.score - a.score);
+
+        const selectedScore = finalists[0]?.scoringDetails?.finalScore ?? 0;
+        console.log("[Recommendation Audit]", {
+            baseCandidates: candidates.length,
+            prelimScoredCandidates: scored.length,
+            assembledCandidates: assembledCandidatePool.length,
+            finalScoredCandidates: finalScoredCandidates.length,
+            topFiveScores: finalScoredCandidates.slice(0, 5).map(candidate => Number((candidate.scoringDetails?.finalScore ?? candidate.score * 100).toFixed(1))),
+            selectedScore: Number(selectedScore.toFixed(1)),
+            selectedReason: finalists[0]
+                ? "Selected highest final score after final outfit assembly, with recent-repeat safeguards."
+                : "No final candidate survived scoring."
+        });
 
         // 10. Update & Save History
         if (finalists.length > 0) {
@@ -236,7 +416,10 @@ export class HybridRecommender {
         return {
             success: true,
             outfits: finalists,
-            outfit: finalists[0]
+            outfit: finalists[0],
+            message: selectedScore > 0 && selectedScore < 85
+                ? "Best available match from your wardrobe."
+                : undefined
         };
     }
 
@@ -371,6 +554,78 @@ export class HybridRecommender {
         return base + outer + shoes;
     }
 
+    private getOuterwearRotationPenalty(outerwear: Item | undefined, history: OutfitHistory): number {
+        if (!outerwear) return 0;
+        const recentIndex = (history.recentOuterwearIds || []).indexOf(outerwear.id);
+        if (recentIndex === -1) return 0;
+        if (recentIndex === 0) return -5;
+        if (recentIndex <= 2) return -4;
+        if (recentIndex <= 5) return -3;
+        return -1;
+    }
+
+    private getOuterwearCandidateScore(
+        outfit: Outfit,
+        outer: Item,
+        preferences: Preferences,
+        history: OutfitHistory,
+        eligibleCount: number
+    ): { score: number; reasons: string[] } {
+        const reasons: string[] = [];
+        let score = 0;
+        const targetStyle = preferences.occasion || (preferences as PreferencesWithLegacyStyle).style || "";
+        const baseColor = outfit.type === 'separates' ? outfit.top.color : outfit.dress.color;
+        const weatherTags = (outer.weather || []).map(w => w.trim().toLowerCase());
+        const weatherMatch = !preferences.weather || weatherTags.length === 0 || weatherTags.includes(preferences.weather.toLowerCase());
+        const rainGear = this.isRainGear(outer);
+
+        if (this.matchesStyle(outer, targetStyle)) {
+            score += 4;
+            reasons.push("style-compatible");
+        }
+        if (weatherMatch) {
+            score += 4;
+            reasons.push("weather-compatible");
+        }
+        if (preferences.weather === "Rainy") {
+            if (rainGear) {
+                score += 5;
+                reasons.push("rain-specific outerwear");
+            } else if (weatherMatch) {
+                score += 2;
+                reasons.push("tagged for rainy weather");
+            } else {
+                score -= 8;
+                reasons.push("not rain-compatible");
+            }
+        }
+        if (this.isValidColorCombination(baseColor, outer.color)) {
+            score += 3;
+            reasons.push("color-compatible");
+        } else {
+            score -= 2;
+            reasons.push("color less compatible");
+        }
+
+        const rotationPenalty = this.getOuterwearRotationPenalty(outer, history);
+        if (rotationPenalty !== 0 && eligibleCount > 1) {
+            score += rotationPenalty;
+            reasons.push(`recent outerwear rotation ${rotationPenalty}`);
+        }
+        const recentUseCount = (history.recentOuterwearIds || []).slice(0, 10).filter(id => id === outer.id).length;
+        if (recentUseCount > 1 && eligibleCount > 1) {
+            const repeatPenalty = -Math.min(4, recentUseCount);
+            score += repeatPenalty;
+            reasons.push(`appeared ${recentUseCount} times recently ${repeatPenalty}`);
+        }
+        if (eligibleCount >= 3 && preferences.penalizedOuterwearIds?.includes(outer.id)) {
+            score -= 6;
+            reasons.push("previously disliked outerwear -6");
+        }
+
+        return { score, reasons };
+    }
+
     /**
      * Pass 2: Attach outerwear to chosen base finalists
      * This guarantees batch-level uniqueness and applies rotation rules.
@@ -383,79 +638,100 @@ export class HybridRecommender {
     ): Outfit[] {
         const usedOuterwearIds = new Set<string>();
         const isCold = preferences.weather === "Cold" || preferences.weather === "Snowy";
+        const isRainy = preferences.weather === "Rainy";
         const eligibleCount = eligibleOuterwear.length;
+        const rainCompatibleOuterwear = eligibleOuterwear.filter(outer =>
+            this.isRainGear(outer) ||
+            (outer.weather || []).some(w => w.trim().toLowerCase() === "rainy")
+        );
+        const umbrellas = (this.lastPartitionedAccessories || []).filter(item =>
+            item.name.toLowerCase().includes("umbrella") ||
+            (item.tags && item.tags.some(t => t.toLowerCase().includes("umbrella")))
+        );
 
         console.log(`[Bulletproof Outer] Starting Assignment for ${finalists.length} base outfits.`);
         console.log(`[Bulletproof Outer] Eligible Pool (${eligibleCount}): [${eligibleOuterwear.map(o => o.id).join(', ')}]`);
         console.log(`[Bulletproof Outer] Base Finalist IDs: [${finalists.map(f => this.getBaseId(f)).join(', ')}]`);
+        if (isRainy && rainCompatibleOuterwear.length === 1) {
+            console.log("Only one rain-compatible outerwear item available.", {
+                id: rainCompatibleOuterwear[0].id,
+                name: rainCompatibleOuterwear[0].name
+            });
+        } else if (isRainy && rainCompatibleOuterwear.length === 0 && umbrellas.length > 0) {
+            console.log("[Outerwear Diversity] No strong rain-compatible outerwear found. Umbrella/accessory support can cover rainy weather.");
+        }
 
         return finalists.map((outfit, idx) => {
             const accessories = this.lastPartitionedAccessories || [];
 
-            // 1. Rank outerwear for THIS specific outfit
             const rankedOuter = eligibleOuterwear.map(outer => {
-                let score = 0;
-
-                // Style Match (filtered items get +5)
-                score += 5;
-
-                // Color Harmony
-                const baseColor = outfit.type === 'separates' ? outfit.top.color : outfit.dress.color;
-                if (this.isValidColorCombination(baseColor, outer.color)) score += 3;
-
-                // Rotation Penalties
-                const recentIds = history.recentOuterwearIds || [];
-                let isBlocked = false;
-                if (eligibleCount >= 5) {
-                    if (recentIds.slice(0, 2).includes(outer.id)) isBlocked = true;
-                } else if (eligibleCount >= 3) {
-                    if (recentIds.slice(0, 1).includes(outer.id)) isBlocked = true;
-                }
-                if (isBlocked) score -= 20;
-
-                const recentIndex = recentIds.indexOf(outer.id);
-                if (recentIndex !== -1) {
-                    const recencyFactor = Math.max(0, 1 - (recentIndex / 10));
-                    score -= (2 + (2 * recencyFactor));
-                }
-
-                // SOFT PENALTY for Disliked Outerwear
-                // Safety: Ignore penalty if pool is too small (< 3)
-                if (eligibleCount >= 3 && preferences.penalizedOuterwearIds?.includes(outer.id)) {
-                    score -= 5; // Significant soft penalty
-                }
-
-                return { outer, score };
+                const ranked = this.getOuterwearCandidateScore(outfit, outer, preferences, history, eligibleCount);
+                return { outer, ...ranked };
             }).sort((a, b) => b.score - a.score);
 
-            // 2. Select best available (Batch uniqueness)
             let chosenOuter: Item | undefined = undefined;
+            let reasonSelected = "No outerwear selected.";
             const uniqueChoice = rankedOuter.find(r => !usedOuterwearIds.has(r.outer.id));
+            const topScore = rankedOuter[0]?.score ?? 0;
+            const topUniqueChoice = uniqueChoice && uniqueChoice.score >= topScore - 6 ? uniqueChoice : undefined;
 
-            // LOGGING: IDs and Count
             const penalizedCount = preferences.penalizedOuterwearIds?.length || 0;
             if (idx === 0) {
                 console.log(`[Bulletproof Outer] Eligible IDs: [${eligibleOuterwear.map(o => o.id).join(', ')}]`);
                 console.log(`[Bulletproof Outer] Penalized IDs Count: ${penalizedCount}`);
             }
 
-            if (uniqueChoice) {
-                chosenOuter = uniqueChoice.outer;
+            if (topUniqueChoice) {
+                chosenOuter = topUniqueChoice.outer;
                 usedOuterwearIds.add(chosenOuter.id);
+                reasonSelected = topUniqueChoice === rankedOuter[0]
+                    ? "Highest-scoring weather/style/color match."
+                    : "Selected close-scoring unused outerwear to improve rotation.";
             } else if (eligibleCount > 0) {
-                // Fallback: Best repeat
-                chosenOuter = rankedOuter[0].outer;
-                console.log(`[Bulletproof Outer]   #${idx + 1}: Pool exhausted for uniqueness. Re-using best match.`);
+                const canUseUmbrellaFallback = isRainy &&
+                    umbrellas.length > 0 &&
+                    rainCompatibleOuterwear.length === 0 &&
+                    rankedOuter[0]?.score < 7;
+
+                if (canUseUmbrellaFallback) {
+                    reasonSelected = "No strong rain-compatible outerwear; relying on umbrella/accessory support.";
+                    console.log(`[Bulletproof Outer]   #${idx + 1}: ${reasonSelected}`);
+                } else {
+                    chosenOuter = rankedOuter[0].outer;
+                    reasonSelected = eligibleCount === 1
+                        ? "Only one weather-valid outerwear item available."
+                        : "Re-using the highest-scoring outerwear because alternatives were much weaker.";
+                    console.log(`[Bulletproof Outer]   #${idx + 1}: Pool exhausted or alternatives too weak. ${reasonSelected}`);
+                }
             }
 
+            const outerwearDebug: OuterwearSelectionDebug = {
+                candidateOptions: rankedOuter.map(candidate => ({
+                    id: candidate.outer.id,
+                    name: candidate.outer.name,
+                    score: Number(candidate.score.toFixed(1)),
+                    reasons: candidate.reasons
+                })),
+                selectedOuterwearId: chosenOuter?.id,
+                selectedOuterwearName: chosenOuter?.name,
+                reasonSelected
+            };
+
             if (chosenOuter) {
-                console.log(`[Bulletproof Outer]   #${idx + 1}: Chosen: ${chosenOuter.name} (${chosenOuter.id}) | Used Set: [${Array.from(usedOuterwearIds).join(', ')}]`);
-                outfit = { ...outfit, outerwear: chosenOuter };
-            } else if (isCold) {
+                console.log(`[Outerwear Diversity] #${idx + 1}`, {
+                    candidates: outerwearDebug.candidateOptions,
+                    selectedOuterwear: `${chosenOuter.name} (${chosenOuter.id})`,
+                    reasonSelected
+                });
+                outfit = { ...outfit, outerwear: chosenOuter, outerwearDebug };
+            } else {
+                outfit = { ...outfit, outerwearDebug };
+            }
+
+            if (!chosenOuter && isCold) {
                 console.warn(`[Bulletproof Outer]   #${idx + 1}: MANDATORY outerwear missing for Cold/Snowy!`);
             }
 
-            // 3. Add Accessory (since it was removed from Pass 1)
             const withAcc = this.addAccessoryIfNeeded(outfit, accessories, preferences);
             return withAcc[0] || outfit;
         });
@@ -506,7 +782,7 @@ export class HybridRecommender {
      * Strict Item Filtering based on Tags
      */
     private filterItemsStrict(items: Item[], preferences: Preferences): Item[] {
-        const targetStyle = (preferences.occasion || (preferences as any).style || "").trim();
+        const targetStyle = (preferences.occasion || (preferences as PreferencesWithLegacyStyle).style || "").trim();
         const targetWeather = (preferences.weather || "").trim();
         const isAllStyles = targetStyle.toLowerCase() === "all styles";
         const isRainy = targetWeather.toLowerCase() === "rainy";
@@ -558,16 +834,17 @@ export class HybridRecommender {
         for (const item of shuffled) {
             const rawCat = item.category || "";
             const c = normalize(rawCat);
+            const group = getCategoryGroup(rawCat);
 
             // CATEGORY MAPPING (Inclusive for synonyms)
-            if (c === "top") partitioned.tops.push(item);
-            else if (c === "bottom" || c === "shorts/skirts") partitioned.bottoms.push(item);
-            else if (c === "dress") partitioned.dresses.push(item);
-            else if (c === "footwear") partitioned.footwear.push(item);
-            else if (c === "outerwear" || c === "jacket" || c === "coat" || c.includes("jacket") || c.includes("coat")) {
+            if (group === "top") partitioned.tops.push(item);
+            else if (group === "bottom") partitioned.bottoms.push(item);
+            else if (group === "dress") partitioned.dresses.push(item);
+            else if (group === "footwear") partitioned.footwear.push(item);
+            else if (group === "outerwear" || c === "jacket" || c === "coat" || c.includes("jacket") || c.includes("coat")) {
                 partitioned.outerwear.push(item);
             }
-            else if (c === "accessory" || item.name.toLowerCase().includes("umbrella") || (item.tags && item.tags.some(t => t.toLowerCase().includes("umbrella")))) {
+            else if (group === "accessory" || item.name.toLowerCase().includes("umbrella") || (item.tags && item.tags.some(t => t.toLowerCase().includes("umbrella")))) {
                 partitioned.accessories.push(item);
             }
         }
@@ -920,55 +1197,52 @@ export class HybridRecommender {
         let coldPenaltyAppliedCount = 0;
 
         const results = candidates.map(outfit => {
-            // Calculate rule-based score
-            const ruleScore = this.calculateRuleScore(outfit, preferences);
-
-            // Extract features for ML
-            const features = this.extractFeatures(outfit, preferences);
-
-            // Calculate ML score
+            const ruleEvaluation = this.evaluateRuleScore(outfit, preferences);
+            const ruleScore = ruleEvaluation.pointsAwarded;
+            const features = this.extractFeatures(outfit, { ...preferences, recentKeyItemIds: history.recentKeyItemIds });
             const mlScore = this.predictProbability(features);
-
-            // Hybrid score: 70% rules, 30% ML
-            const normalizedRuleScore = ruleScore / 17; // Max rule score is 17
-            const finalScore = 0.7 * normalizedRuleScore + 0.3 * mlScore;
-
-            // --- PENALTIES (Proportional to 0-1 range) ---
-            let penalty = 0;
+            const mlScorePercent = clampPercent(mlScore * 100);
+            let rotationPenalty = 0;
+            let weatherPenalty = 0;
+            const feedbackAdjustment = 0;
+            const preferenceSignal = this.calculatePreferenceAdjustment(outfit, preferences.preferenceProfile);
             const fullId = this.getFullId(outfit);
             const keyId = this.getKeyItemId(outfit);
 
-
             if (history.recentFullOutfitIds.includes(fullId)) {
-                // HARD SKIP: If exact full outfit shown recently -> Kill it.
-                return { ...outfit, ruleScore, mlScore, score: -9999, features };
+                return { ...outfit, ruleScore, mlScore, score: -9999, features, ruleEvaluation };
             }
 
             if (history.recentKeyItemIds.includes(keyId)) {
-                // SOFT PENALTY: Repetitive main piece -> -0.20
-                penalty -= 0.20;
+                rotationPenalty -= 5;
             }
 
-            // WINTER BOTTOMS PENALTY (Cold Weather only, Snowy handled via pre-filter)
             if (preferences.weather === "Cold" && outfit.type === "separates" && this.isShortsOrSkirts(outfit.bottom)) {
-                // Safety: only penalize if we have enough non-short bottoms
                 if (nonShortBottomsCount >= 3) {
-                    penalty -= 0.25;
+                    weatherPenalty -= 5;
                     coldPenaltyAppliedCount++;
                 }
             }
 
-            // --- Note: Outerwear penalties REMOVED from Pass 1 scoring ---
-            // They are now handled in Pass 2 (attachOuterwearToFinalists)
-
-            // Add 5% Random Jitter
-            const jitter = (Math.random() - 0.5) * 0.05;
+            const randomAdjustment = 0;
+            const scoringDetails = this.createScoringDetails(
+                ruleScore,
+                mlScorePercent,
+                rotationPenalty,
+                weatherPenalty,
+                feedbackAdjustment,
+                preferenceSignal.adjustment,
+                preferenceSignal.reasons,
+                randomAdjustment
+            );
 
             return {
                 ...outfit,
                 ruleScore,
                 mlScore,
-                score: finalScore + penalty + jitter,
+                score: scoringDetails.finalScore / 100,
+                scoringDetails,
+                ruleEvaluation,
                 features
             };
         }).sort((a, b) => b.score - a.score);
@@ -978,6 +1252,80 @@ export class HybridRecommender {
         }
 
         return results;
+    }
+
+    private createScoringDetails(
+        ruleScoreRaw: number,
+        mlScorePercent: number,
+        rotationPenalty: number,
+        weatherPenalty: number,
+        feedbackAdjustment: number,
+        preferenceAdjustment: number,
+        preferenceReasons: string[],
+        randomAdjustment: number
+    ): ScoringDetails {
+        return calculateScoringDetails({
+            ruleScoreRaw,
+            rotationPenalty,
+            weatherPenalty,
+            feedbackAdjustment,
+            preferenceAdjustment,
+            preferenceReasons,
+            mlScorePercent,
+            randomAdjustment,
+        });
+    }
+
+    private rescoreFinalOutfits(
+        outfits: Outfit[],
+        preferences: Preferences,
+        history: OutfitHistory,
+        nonShortBottomsCount: number
+    ): Outfit[] {
+        return outfits.map(outfit => this.rescoreFinalOutfit(outfit, preferences, history, nonShortBottomsCount));
+    }
+
+    private rescoreFinalOutfit(
+        outfit: Outfit,
+        preferences: Preferences,
+        history: OutfitHistory,
+        nonShortBottomsCount: number
+    ): Outfit {
+        const ruleEvaluation = this.evaluateRuleScore(outfit, preferences);
+        const ruleScore = ruleEvaluation.pointsAwarded;
+        const features = this.extractFeatures(outfit, { ...preferences, recentKeyItemIds: history.recentKeyItemIds });
+        const mlScore = this.predictProbability(features);
+        const mlScorePercent = clampPercent(mlScore * 100);
+        const previousDetails = outfit.scoringDetails;
+        const rotationPenalty = (history.recentKeyItemIds.includes(this.getKeyItemId(outfit)) ? -5 : 0) +
+            this.getOuterwearRotationPenalty(outfit.outerwear, history);
+        let weatherPenalty = 0;
+        const preferenceSignal = this.calculatePreferenceAdjustment(outfit, preferences.preferenceProfile);
+
+        if (preferences.weather === "Cold" && outfit.type === "separates" && this.isShortsOrSkirts(outfit.bottom) && nonShortBottomsCount >= 3) {
+            weatherPenalty = -5;
+        }
+
+        const scoringDetails = this.createScoringDetails(
+            ruleScore,
+            mlScorePercent,
+            rotationPenalty,
+            weatherPenalty,
+            previousDetails?.feedbackAdjustment ?? 0,
+            preferenceSignal.adjustment,
+            preferenceSignal.reasons,
+            previousDetails?.randomAdjustment ?? 0
+        );
+
+        return {
+            ...outfit,
+            ruleScore,
+            mlScore,
+            score: scoringDetails.finalScore / 100,
+            scoringDetails,
+            ruleEvaluation,
+            features
+        };
     }
 
     /**
@@ -990,24 +1338,57 @@ export class HybridRecommender {
      * - Dress bonus: 0-1 point
      */
     private calculateRuleScore(outfit: Outfit, preferences: Preferences): number {
-        let score = 0;
+        return this.evaluateRuleScore(outfit, preferences).pointsAwarded;
+    }
 
-        // 1. Style Match Score (0-8 points)
-        score += this.calculateStyleScore(outfit, preferences.occasion);
+    private evaluateRuleScore(outfit: Outfit, preferences: Preferences): RuleEvaluationDetails {
+        const passedRules: PassedRule[] = [];
+        const failedRules: FailedRule[] = [];
+        const notApplicableRules: NotApplicableRule[] = [];
+        let pointsAwarded = 0;
+        let pointsPossible = 0;
 
-        // 2. Color/Contrast Score (0-6 points)
-        score += this.calculateColorScore(outfit);
+        const addPassed = (name: string, points: number, explanation: string) => {
+            passedRules.push({ name, points, explanation });
+            pointsAwarded += points;
+            pointsPossible += points;
+        };
+        const addFailed = (name: string, pointsLost: number, explanation: string) => {
+            failedRules.push({ name, pointsLost, explanation });
+            pointsPossible += pointsLost;
+        };
+        const addNotApplicable = (name: string, explanation: string) => {
+            notApplicableRules.push({ name, explanation });
+        };
 
-        // 3. Weather Score (0-3 points)
-        score += this.calculateWeatherScore(outfit, preferences.weather);
+        const styleScore = this.calculateStyleScore(outfit, preferences.occasion);
+        if (styleScore > 0) addPassed("Style Match", styleScore, `${styleScore} style points from items matching ${preferences.occasion}.`);
+        if (styleScore < 8) addFailed("Style Match", 8 - styleScore, "Some visible items do not strongly match the requested style.");
 
-        // 4. Dress Bonus (0-1 point)
-        if (outfit.type === 'dress' &&
-            (preferences.occasion === "Party / Dressy" || preferences.occasion === "Formal")) {
-            score += 1;
+        const colorScore = this.calculateColorScore(outfit);
+        if (colorScore > 0) addPassed("Color Harmony", colorScore, "Colors include neutrals, balanced accents, or compatible contrast.");
+        if (colorScore < 6) addFailed("Color Harmony", 6 - colorScore, "Color pairing has limited harmony points.");
+
+        const weatherScore = this.calculateWeatherScore(outfit, preferences.weather);
+        if (weatherScore > 0) addPassed("Weather Match", weatherScore, this.getWeatherExplanation(outfit, preferences.weather));
+        if (weatherScore < 3) addFailed("Weather Match", 3 - weatherScore, "Weather support is incomplete for the selected condition.");
+
+        if (outfit.type === 'dress' && (preferences.occasion === "Party / Dressy" || preferences.occasion === "Formal")) {
+            addPassed("Dress Context Bonus", 1, "Dress outfit fits a formal or dressy context.");
+        } else {
+            addNotApplicable("Dress Context Bonus", "Only applies to formal or dressy dress outfits.");
         }
 
-        return score;
+        return {
+            passedRules,
+            failedRules,
+            notApplicableRules,
+            rulesPassed: passedRules.length,
+            rulesFailed: failedRules.length,
+            pointsAwarded,
+            pointsPossible,
+            pointsLost: Math.max(0, pointsPossible - pointsAwarded)
+        };
     }
 
     /**
@@ -1113,6 +1494,26 @@ export class HybridRecommender {
         return Math.max(0, Math.min(score, 3));
     }
 
+    private getWeatherExplanation(outfit: Outfit, weather: WeatherType): string {
+        if (weather === "Cold" || weather === "Snowy") {
+            return outfit.outerwear
+                ? `Outerwear is included for ${weather} weather.`
+                : `No outerwear was included for ${weather} weather.`;
+        }
+        if (weather === "Sunny" || weather === "Warm") {
+            return outfit.outerwear
+                ? `Outerwear is included, so warm-weather scoring is reduced.`
+                : `No outerwear is included for ${weather} weather.`;
+        }
+        if (weather === "Rainy") {
+            if (outfit.outerwear && this.isRainGear(outfit.outerwear)) return "Rain-appropriate outerwear is included.";
+            if (outfit.accessory && outfit.accessory.name.toLowerCase().includes("umbrella")) return "Umbrella support is included.";
+            if (outfit.footwear.category.includes("Boot") || this.isRainGear(outfit.footwear)) return "Footwear supports rainy weather.";
+            return "Rainy weather receives only the base weather score for this outfit.";
+        }
+        return "Weather constraint is broadly satisfied.";
+    }
+
     // ========================================================================
     // ML FEATURE EXTRACTION
     // ========================================================================
@@ -1123,51 +1524,56 @@ export class HybridRecommender {
      */
     private extractFeatures(outfit: Outfit, preferences: Preferences): number[] {
         const items = this.getOutfitItems(outfit);
-
-        // 1. Style match count (0-4)
-        const styleMatchCount = items.filter(item =>
-            this.itemHasStyle(item, preferences.occasion)
-        ).length;
-
-        // 2. Neutral color count (0-4)
+        const styleMatches = items.filter(item => this.itemHasStyle(item, preferences.occasion)).length;
+        const styleCoverage = items.length > 0 ? styleMatches / items.length : 0;
         const neutralColors = ["Black", "White", "Grey", "Gray", "Beige", "Navy", "Denim", "Brown"];
-        const neutralCount = items.filter(item =>
-            neutralColors.some(n => item.color?.includes(n))
-        ).length;
-
-        // 3. Has contrast (0 or 1)
-        let hasContrast = 0;
-        if (outfit.type === 'separates') {
-            hasContrast = outfit.top.color !== outfit.bottom.color ? 1 : 0;
-        }
-
-        // 4. Weather match (0 or 1)
-        let weatherMatch = 0;
-        if ((preferences.weather === "Cold" || preferences.weather === "Snowy") && outfit.outerwear) {
-            weatherMatch = 1;
-        } else if ((preferences.weather === "Sunny" || preferences.weather === "Warm") && !outfit.outerwear) {
-            weatherMatch = 1;
-        } else if (preferences.weather === "Rainy") {
-            if ((outfit.outerwear && this.isRainGear(outfit.outerwear)) ||
-                (outfit.accessory && outfit.accessory.name.toLowerCase().includes("umbrella"))) {
-                weatherMatch = 1;
-            }
-        }
-
-        // 5. Has outerwear (0 or 1)
+        const neutralRatio = items.length > 0
+            ? items.filter(item => neutralColors.some(n => item.color?.includes(n))).length / items.length
+            : 0;
+        const hasContrast = outfit.type === 'separates' && outfit.top.color !== outfit.bottom.color ? 1 : 0;
+        const weatherQuality = this.calculateWeatherScore(outfit, preferences.weather) / 3;
         const hasOuterwear = outfit.outerwear ? 1 : 0;
-
-        // 6. Is dress (0 or 1)
         const isDress = outfit.type === 'dress' ? 1 : 0;
+        const categoryCompleteness = outfit.type === 'separates'
+            ? Number(Boolean(outfit.top && outfit.bottom && outfit.footwear))
+            : Number(Boolean(outfit.dress && outfit.footwear));
+        const colorHarmonyQuality = this.calculateColorScore(outfit) / 6;
+        let outerwearFit = 0.5;
+        if ((preferences.weather === "Cold" || preferences.weather === "Snowy") && outfit.outerwear) {
+            outerwearFit = 1;
+        } else if ((preferences.weather === "Sunny" || preferences.weather === "Warm") && !outfit.outerwear) {
+            outerwearFit = 1;
+        } else if (preferences.weather === "Rainy") {
+            outerwearFit = outfit.outerwear && this.isRainGear(outfit.outerwear) ? 1 : 0.5;
+        } else if (outfit.outerwear) {
+            outerwearFit = 0.6;
+        }
+        const weatherSpecificity = (preferences.weather === "Rainy" || preferences.weather === "Cold" || preferences.weather === "Snowy") ? 1 : 0.75;
+        const keyId = this.getKeyItemId(outfit);
+        const recentKeyPenalty = preferences.recentKeyItemIds?.includes(keyId) ? 1 : 0;
+        const feedbackPenaltySignal = outfit.outerwear && preferences.penalizedOuterwearIds?.includes(outfit.outerwear.id) ? 1 : 0;
 
-        return [styleMatchCount, neutralCount, hasContrast, weatherMatch, hasOuterwear, isDress];
+        return [
+            styleCoverage,
+            neutralRatio,
+            hasContrast,
+            weatherQuality,
+            hasOuterwear,
+            isDress,
+            categoryCompleteness,
+            colorHarmonyQuality,
+            outerwearFit,
+            weatherSpecificity,
+            recentKeyPenalty,
+            feedbackPenaltySignal
+        ];
     }
 
     /**
      * Logistic regression prediction
      * P(y=1|x) = 1 / (1 + e^-(w*x + b))
      */
-    private predictProbability(features: number[]): number {
+    private predictProbabilityLegacy(features: number[]): number {
         let z = this.bias;
         for (let i = 0; i < Math.min(features.length, this.weights.length); i++) {
             z += features[i] * this.weights[i];
@@ -1177,6 +1583,132 @@ export class HybridRecommender {
         z += (Math.random() - 0.5) * 0.1;
 
         return 1 / (1 + Math.exp(-z));
+    }
+
+    private predictProbability(features: number[]): number {
+        const [
+            styleCoverage = 0,
+            neutralRatio = 0,
+            hasContrast = 0,
+            weatherQuality = 0,
+            hasOuterwear = 0,
+            isDress = 0,
+            categoryCompleteness = 0,
+            colorHarmonyQuality = 0,
+            outerwearFit = 0,
+            weatherSpecificity = 0,
+            recentKeyPenalty = 0,
+            feedbackPenalty = 0
+        ] = features;
+
+        const score =
+            45 +
+            (styleCoverage * this.heuristicWeights.styleCoverage) +
+            (colorHarmonyQuality * this.heuristicWeights.colorHarmonyQuality) +
+            (weatherQuality * weatherSpecificity * this.heuristicWeights.weatherQuality) +
+            (categoryCompleteness * this.heuristicWeights.categoryCompleteness) +
+            (neutralRatio * this.heuristicWeights.neutralRatio) +
+            (hasContrast * this.heuristicWeights.hasContrast) +
+            ((hasOuterwear ? outerwearFit * weatherSpecificity : 0) * this.heuristicWeights.outerwearFit) +
+            (isDress * this.heuristicWeights.isDress) +
+            (recentKeyPenalty * this.heuristicWeights.recentKeyPenalty) +
+            (feedbackPenalty * this.heuristicWeights.feedbackPenalty);
+
+        return clampPercent(score) / 100;
+    }
+
+    private calculatePreferenceAdjustment(outfit: Outfit, profile?: PreferenceProfile): { adjustment: number; reasons: string[] } {
+        if (!profile) return { adjustment: 0, reasons: ["No learned preference profile available yet."] };
+
+        const items = this.getOutfitItems(outfit);
+        const colors = items.map(item => item.color).filter(Boolean);
+        const categories = items.map(item => item.category).filter(Boolean);
+        const styles = items.flatMap(item => item.styles && item.styles.length > 0 ? item.styles : [item.style]).filter(Boolean);
+        const itemIds = items.map(item => item.id);
+        const combinationKey = this.getCombinationKey(outfit);
+        const reasons: string[] = [];
+        let adjustment = 0;
+
+        const likedColorMatches = this.countNetPreferenceMatches(colors, profile.likedColors, profile.dislikedColors, 1);
+        if (likedColorMatches > 0) {
+            const boost = Math.min(3, likedColorMatches);
+            adjustment += boost;
+            reasons.push(`Boosted +${boost} because this outfit uses colors you have liked before.`);
+        }
+
+        const dislikedColorMatches = this.countNetPreferenceMatches(colors, profile.likedColors, profile.dislikedColors, -1);
+        if (dislikedColorMatches > 0) {
+            const penalty = Math.min(5, dislikedColorMatches * 2);
+            adjustment -= penalty;
+            reasons.push(`Reduced -${penalty} because this outfit includes colors you have disliked before.`);
+        }
+
+        const likedStyleMatches = this.countNetPreferenceMatches(styles, profile.likedStyles, profile.dislikedStyles, 1);
+        if (likedStyleMatches > 0) {
+            const boost = Math.min(3, likedStyleMatches);
+            adjustment += boost;
+            reasons.push(`Boosted +${boost} because it matches styles you often like.`);
+        }
+
+        const dislikedCategoryMatches = this.countNetPreferenceMatches(categories, profile.likedCategories, profile.dislikedCategories, -1);
+        if (dislikedCategoryMatches > 0) {
+            const penalty = Math.min(5, dislikedCategoryMatches * 2);
+            adjustment -= penalty;
+            reasons.push(`Reduced -${penalty} because it includes categories you have disliked before.`);
+        }
+
+        const likedCategoryMatches = this.countNetPreferenceMatches(categories, profile.likedCategories, profile.dislikedCategories, 1);
+        if (likedCategoryMatches > 0) {
+            const boost = Math.min(2, likedCategoryMatches);
+            adjustment += boost;
+            reasons.push(`Boosted +${boost} because it includes categories you have liked before.`);
+        }
+
+        const dislikedItemMatches = itemIds.filter(id => this.getNetPreference(id, profile.likedItems || {}, profile.dislikedItems) < 0);
+        if (dislikedItemMatches.length > 0) {
+            const hasRepeatedDislike = dislikedItemMatches.some(id => Math.abs(this.getNetPreference(id, profile.likedItems || {}, profile.dislikedItems)) >= 2);
+            const penalty = hasRepeatedDislike ? 5 : Math.min(5, dislikedItemMatches.length * 3);
+            adjustment -= penalty;
+            reasons.push(`Reduced -${penalty} because this includes an item you previously disliked.`);
+        }
+
+        const combinationPreference = this.getNetPreference(combinationKey, profile.likedCombinations, profile.dislikedCombinations);
+        if (combinationPreference > 0) {
+            adjustment += 3;
+            reasons.push("Boosted +3 because this item combination has been liked before.");
+        }
+        if (combinationPreference < 0) {
+            adjustment -= 5;
+            reasons.push("Reduced -5 because this item combination has been disliked before.");
+        }
+
+        return {
+            adjustment: Math.max(-8, Math.min(8, adjustment)),
+            reasons: reasons.length > 0 ? reasons : ["No strong learned preference pattern matched this outfit."]
+        };
+    }
+
+    private countNetPreferenceMatches(
+        values: string[],
+        likedCounts: Record<string, number>,
+        dislikedCounts: Record<string, number>,
+        direction: 1 | -1
+    ): number {
+        return values.reduce((count, value) => {
+            const net = this.getNetPreference(value, likedCounts, dislikedCounts);
+            if (direction === 1 && net > 0) return count + 1;
+            if (direction === -1 && net < 0) return count + 1;
+            return count;
+        }, 0);
+    }
+
+    private getNetPreference(value: string, likedCounts: Record<string, number>, dislikedCounts: Record<string, number>): number {
+        return (likedCounts[value] || 0) - (dislikedCounts[value] || 0);
+    }
+
+    private getCombinationKey(outfit: Outfit): string {
+        const ids = this.getOutfitItems(outfit).map(item => item.id).sort();
+        return ids.join("|");
     }
 
     /**

@@ -19,9 +19,9 @@ export default function RootLayout({
 }>) {
   return (
      <html lang="en" className="dark">
-      <body className={cn(inter.className, "min-h-screen bg-black text-white")}>
+      <body className={cn(inter.className, "min-h-screen max-w-full overflow-x-hidden bg-black text-white")}>
         <Navbar />
-        <main className="container py-6">
+        <main className="container max-w-full overflow-x-hidden py-6">
           {children}
         </main>
         <Footer />

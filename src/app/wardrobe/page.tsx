@@ -10,8 +10,9 @@ import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Loader } from "@/components/ui/loader"
 import { Card, CardContent, CardFooter } from "@/components/ui/card"
+import { CLOSET_CATEGORIES } from "@/lib/categories"
 
-const categories = ["All", "Top", "Bottom", "Dress", "Shorts/Skirts", "Footwear", "Outerwear", "Accessory"]
+const categories = ["All", ...CLOSET_CATEGORIES]
 const styles = ["All", "Casual", "Smart Casual", "Formal", "Party / Dressy", "Sporty / Athleisure", "Streetwear"]
 
 export default function WardrobePage() {
@@ -135,7 +136,7 @@ export default function WardrobePage() {
                     <p>No items found. Upload some clothes to get started!</p>
                 </div>
             ) : (
-                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6 items-start auto-rows-auto">
                     <AnimatePresence>
                         {filteredItems.map((item) => (
                             <motion.div
@@ -146,15 +147,15 @@ export default function WardrobePage() {
                                 exit={{ opacity: 0, scale: 0.9 }}
                                 transition={{ duration: 0.2 }}
                             >
-                                <Card className="overflow-hidden group h-full flex flex-col">
-                                    <div className="aspect-square relative bg-muted">
+                                <Card className="overflow-hidden group h-auto flex flex-col">
+                                    <div className="h-64 md:h-72 relative bg-muted/60 flex items-center justify-center">
                                         <img
                                             src={item.image_url}
                                             alt={item.name}
-                                            className="object-cover w-full h-full transition-transform group-hover:scale-105"
+                                            className="object-contain w-full h-full p-3 transition-transform group-hover:scale-105"
                                         />
                                     </div>
-                                    <CardContent className="p-4 flex-1">
+                                    <CardContent className="p-4">
                                         <h3 className="font-semibold truncate">{item.name}</h3>
                                         <div className="flex gap-2 mt-1 text-xs text-muted-foreground">
                                             <span className="bg-secondary px-2 py-0.5 rounded-full">{item.category}</span>

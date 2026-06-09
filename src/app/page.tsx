@@ -1,7 +1,7 @@
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
-import { Shirt, Upload, Sparkles, ArrowRight } from "lucide-react"
+import { Shirt, Upload, Sparkles, ArrowRight, type LucideIcon } from "lucide-react"
 
 export default function Home() {
   return (
@@ -51,7 +51,7 @@ export default function Home() {
   )
 }
 
-function FeatureCard({ icon: Icon, title, description, href }: any) {
+function FeatureCard({ icon: Icon, title, description, href }: { icon: LucideIcon; title: string; description: string; href: string }) {
   return (
     <Link href={href}>
       <Card className="h-full transition-all hover:shadow-lg hover:-translate-y-1 cursor-pointer">
