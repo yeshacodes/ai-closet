@@ -20,13 +20,13 @@ const lowRuleHighMl = calculateScoringDetails({
     ruleScoreRaw: 4,
     mlScorePercent: 95
 });
-assert(lowRuleHighMl.finalScore >= 40 && lowRuleHighMl.finalScore <= 60, "Low rule + high ML should produce a medium final score.");
+assert(lowRuleHighMl.finalScore >= 60 && lowRuleHighMl.finalScore <= 70, "Low rule + high ML should produce a medium-high final score under the heuristic-weighted formula.");
 
 const highRuleLowMl = calculateScoringDetails({
     ruleScoreRaw: 14,
     mlScorePercent: 20
 });
-assert(highRuleLowMl.finalScore >= 55 && highRuleLowMl.finalScore <= 70, "High rule + low ML should produce a medium final score.");
+assert(highRuleLowMl.finalScore >= 45 && highRuleLowMl.finalScore <= 55, "High rule + low ML should remain limited by weak heuristic confidence.");
 
 const unpenalized = calculateScoringDetails({
     ruleScoreRaw: 12,

@@ -1,8 +1,9 @@
-import { HybridRecommender } from "./src/lib/recommender";
+import { HybridRecommender, Preferences } from "./src/lib/recommender";
+import { Item } from "./src/types";
 import fs from 'fs';
 
 // Load real data
-const data = JSON.parse(fs.readFileSync('outerwear_summary.json', 'utf-8'));
+const data = JSON.parse(fs.readFileSync('outerwear_summary.json', 'utf-8')) as { outerwear: Item[] };
 const realOuterwear = data.outerwear;
 
 // Create some mock tops/bottoms/shoes that match a specific style/weather
@@ -14,8 +15,8 @@ const mockItems = [
     { id: "bot1", name: "Bot 1", category: "Bottom", color: "Black", styles: ["Casual"], weather: ["Cold"], created_at: "", image_url: "", description: "", tags: [] },
     { id: "bot2", name: "Bot 2", category: "Bottom", color: "Black", styles: ["Casual"], weather: ["Cold"], created_at: "", image_url: "", description: "", tags: [] },
     { id: "shoe1", name: "Shoe 1", category: "Footwear", color: "White", styles: ["Casual"], weather: ["Cold"], created_at: "", image_url: "", description: "", tags: [] },
-    ...realOuterwear.map((o: any) => ({ ...o, category: "Outerwear" }))
-];
+    ...realOuterwear.map(o => ({ ...o, category: "Outerwear" }))
+] as Item[];
 
 const recommender = new HybridRecommender();
 
@@ -23,8 +24,8 @@ function runRotationSimulation() {
     console.log(`\n--- Running Simulation with ${realOuterwear.length} real outerwear items ---`);
 
     // We want to see if a SINGLE call returns 5 DIFFERENT outerwear items if available
-    const prefs = { weather: "Cold", occasion: "Casual" } as any;
-    const result = recommender.generateOutfit(mockItems as any, prefs);
+    const prefs: Preferences = { weather: "Cold", occasion: "Casual" };
+    const result = recommender.generateOutfit(mockItems, prefs);
 
     if (result.success && result.outfits) {
         console.log(`\nResults in this batch (${result.outfits.length} outfits):`);

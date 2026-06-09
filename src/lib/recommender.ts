@@ -29,6 +29,7 @@ type OutfitBase = {
     outerwear?: Item;
     accessory?: Item;
     outerwearDebug?: OuterwearSelectionDebug;
+    footwearDebug?: FootwearSelectionDebug;
     score: number;
     ruleScore: number;
     mlScore?: number;
@@ -86,6 +87,15 @@ export type ScoringDetails = {
     finalScoreAfterPreferences: number;
     finalScore: number;
     finalScoreFormulaSummary: string;
+    heuristicContributions?: HeuristicContribution[];
+}
+
+export type HeuristicContribution = {
+    component: string;
+    value: number;
+    weight: number;
+    contribution: number;
+    explanation: string;
 }
 
 export type PassedRule = {
@@ -153,6 +163,7 @@ type OutfitHistory = {
     recentFullOutfitIds: string[]; // Full ID: base + outer + shoes
     recentKeyItemIds: string[];    // Top ID or Dress ID
     recentOuterwearIds: string[];  // Outerwear ID
+    recentFootwearIds: string[];   // Footwear ID
 }
 
 type PreferencesWithLegacyStyle = Preferences & {
@@ -173,10 +184,27 @@ type OuterwearSelectionDebug = {
     reasonSelected: string;
 }
 
+type FootwearCandidateDebug = {
+    id: string;
+    name: string;
+    qualityScore: number;
+    selectionScore: number;
+    styleMatch: boolean;
+    recentUseAdjustment: number;
+    reasons: string[];
+}
+
+type FootwearSelectionDebug = {
+    candidateOptions: FootwearCandidateDebug[];
+    selectedFootwearId?: string;
+    selectedFootwearName?: string;
+    reasonSelected: string;
+}
+
 const HISTORY_KEY = "aiCloset_outfit_history_v1";
 const RULE_SCORE_MAX = 17;
-const RULE_SCORE_WEIGHT = 0.7;
-const ML_SCORE_WEIGHT = 0.3;
+const RULE_SCORE_WEIGHT = 0.45;
+const ML_SCORE_WEIGHT = 0.55;
 
 function clampPercent(value: number): number {
     return Math.max(0, Math.min(100, value));
@@ -195,7 +223,8 @@ export function calculateScoringDetails({
     feedbackAdjustment = 0,
     preferenceAdjustment = 0,
     preferenceReasons = [],
-    randomAdjustment = 0
+    randomAdjustment = 0,
+    heuristicContributions = []
 }: {
     ruleScoreRaw: number;
     mlScorePercent: number;
@@ -205,6 +234,7 @@ export function calculateScoringDetails({
     preferenceAdjustment?: number;
     preferenceReasons?: string[];
     randomAdjustment?: number;
+    heuristicContributions?: HeuristicContribution[];
 }): ScoringDetails {
     const ruleScorePercent = toPercent(ruleScoreRaw, RULE_SCORE_MAX);
     const boundedMlScorePercent = clampPercent(mlScorePercent);
@@ -234,7 +264,8 @@ export function calculateScoringDetails({
         baseScoreBeforePreferences,
         finalScoreAfterPreferences: finalScore,
         finalScore,
-        finalScoreFormulaSummary: "Final Score = clamp((70% * Rule Score %) + (30% * Heuristic Match Confidence %) + explicit adjustments, 0, 100)"
+        finalScoreFormulaSummary: "Final Score = clamp((45% * Rule Score %) + (55% * Heuristic Match Confidence %) + explicit adjustments, 0, 100)",
+        heuristicContributions
     };
 }
 
@@ -252,6 +283,7 @@ export class HybridRecommender {
         neutralRatio: 1,
         hasContrast: 13,
         outerwearFit: 7,
+        footwearStyleFit: 5,
         isDress: -10,
         recentKeyPenalty: -8,
         feedbackPenalty: -8
@@ -392,8 +424,10 @@ export class HybridRecommender {
             ? repeatSafeFinalCandidates
             : allFinalScoredCandidates;
 
-        const finalists = this.selectDiverseFinalists(finalScoredCandidates, history, eligibleOuterCount)
-            .sort((a, b) => b.score - a.score);
+        const selectionRankedCandidates = this.rankCandidatesForSelection(finalScoredCandidates, history);
+        const finalists = this.selectDiverseFinalists(selectionRankedCandidates, history, eligibleOuterCount)
+            .sort((a, b) => this.compareCandidatesForSelection(a, b, history));
+        this.attachFootwearDebug(finalists, selectionRankedCandidates, preferences, history);
 
         const selectedScore = finalists[0]?.scoringDetails?.finalScore ?? 0;
         console.log("[Recommendation Audit]", {
@@ -404,9 +438,19 @@ export class HybridRecommender {
             topFiveScores: finalScoredCandidates.slice(0, 5).map(candidate => Number((candidate.scoringDetails?.finalScore ?? candidate.score * 100).toFixed(1))),
             selectedScore: Number(selectedScore.toFixed(1)),
             selectedReason: finalists[0]
-                ? "Selected highest final score after final outfit assembly, with recent-repeat safeguards."
+                ? "Selected highest quality outfit after final assembly, with modest footwear rotation used only for close candidate selection."
                 : "No final candidate survived scoring."
         });
+        if (finalists[0]?.scoringDetails?.heuristicContributions) {
+            console.log("[Heuristic Component Debug]", {
+                selectedFootwear: finalists[0].footwear.name,
+                selectedFootwearColor: finalists[0].footwear.color,
+                heuristicConfidence: finalists[0].scoringDetails.mlScorePercent,
+                finalScore: finalists[0].scoringDetails.finalScore,
+                preferenceBoost: finalists[0].scoringDetails.preferenceAdjustment,
+                components: finalists[0].scoringDetails.heuristicContributions
+            });
+        }
 
         // 10. Update & Save History
         if (finalists.length > 0) {
@@ -428,7 +472,7 @@ export class HybridRecommender {
     // ========================================================================
 
     private loadHistory(): OutfitHistory {
-        const defaultHistory = { recentFullOutfitIds: [], recentKeyItemIds: [], recentOuterwearIds: [] };
+        const defaultHistory = { recentFullOutfitIds: [], recentKeyItemIds: [], recentOuterwearIds: [], recentFootwearIds: [] };
 
         try {
             if (typeof localStorage === 'undefined') return defaultHistory;
@@ -453,6 +497,9 @@ export class HybridRecommender {
             for (const o of newOutfits) {
                 history.recentFullOutfitIds.unshift(this.getFullId(o));
                 history.recentKeyItemIds.unshift(this.getKeyItemId(o));
+                if (o.footwear) {
+                    history.recentFootwearIds.unshift(o.footwear.id);
+                }
                 if (o.outerwear) {
                     history.recentOuterwearIds.unshift(o.outerwear.id);
                 }
@@ -462,6 +509,7 @@ export class HybridRecommender {
             history.recentFullOutfitIds = history.recentFullOutfitIds.slice(0, 50); // Keep last 50 full outfits
             history.recentKeyItemIds = history.recentKeyItemIds.slice(0, 80);       // Keep last 80 key items
             history.recentOuterwearIds = history.recentOuterwearIds.slice(0, 40);   // Keep last 40 outerwear
+            history.recentFootwearIds = history.recentFootwearIds.slice(0, 60);     // Keep last 60 footwear
 
             localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
         } catch (e) {
@@ -473,7 +521,7 @@ export class HybridRecommender {
         const TOP_K_POOL = 50;
         const TARGET_COUNT = 5;
 
-        // Take top pool of candidates (they are already sorted by score (desc) which includes penalties)
+        // Take top pool of candidates (already ranked for selection).
         // Filter out -Infinity scores (hard skips)
         const pool = scoredCandidates
             .filter(c => c.score > -999)
@@ -539,6 +587,88 @@ export class HybridRecommender {
         return selected;
     }
 
+    private getQualityScore(outfit: Outfit): number {
+        return outfit.scoringDetails?.finalScore ?? outfit.score * 100;
+    }
+
+    private getFootwearSelectionScore(outfit: Outfit, history: OutfitHistory): number {
+        return this.getQualityScore(outfit) + this.getFootwearRotationPenalty(outfit.footwear, history);
+    }
+
+    private compareCandidatesForSelection(a: Outfit, b: Outfit, history: OutfitHistory): number {
+        const qualityDifference = this.getQualityScore(b) - this.getQualityScore(a);
+
+        // Footwear rotation is only a close-candidate tiebreaker. It should not let
+        // a materially weaker outfit outrank a stronger recommendation.
+        if (Math.abs(qualityDifference) > 5) {
+            return qualityDifference;
+        }
+
+        return this.getFootwearSelectionScore(b, history) - this.getFootwearSelectionScore(a, history);
+    }
+
+    private rankCandidatesForSelection(candidates: Outfit[], history: OutfitHistory): Outfit[] {
+        return [...candidates].sort((a, b) => this.compareCandidatesForSelection(a, b, history));
+    }
+
+    private attachFootwearDebug(
+        finalists: Outfit[],
+        finalScoredCandidates: Outfit[],
+        preferences: Preferences,
+        history: OutfitHistory
+    ) {
+        if (finalists.length === 0) return;
+
+        const candidatesByFootwear = new Map<string, FootwearCandidateDebug>();
+        for (const candidate of finalScoredCandidates.slice(0, 80)) {
+            const footwearDebug = this.getFootwearCandidateScore(candidate, preferences, history);
+            const existing = candidatesByFootwear.get(footwearDebug.id);
+            if (!existing || footwearDebug.selectionScore > existing.selectionScore) {
+                candidatesByFootwear.set(footwearDebug.id, footwearDebug);
+            }
+        }
+
+        const candidateOptions = Array.from(candidatesByFootwear.values())
+            .sort((a, b) => b.selectionScore - a.selectionScore)
+            .slice(0, 12);
+
+        for (const finalist of finalists) {
+            const selectedDebug = candidateOptions.find(candidate => candidate.id === finalist.footwear.id) ||
+                this.getFootwearCandidateScore(finalist, preferences, history);
+            const hasRecentPenalty = selectedDebug.recentUseAdjustment < 0;
+            const strongAlternatives = candidateOptions.filter(candidate =>
+                candidate.id !== finalist.footwear.id &&
+                candidate.qualityScore >= selectedDebug.qualityScore - 5
+            );
+            const reasonSelected = hasRecentPenalty && strongAlternatives.length === 0
+                ? "Selected despite recent use because alternatives were much weaker."
+                : hasRecentPenalty
+                    ? "Selected as the best close-quality option after a modest recent-use selection adjustment."
+                    : "Selected for style, occasion, and color compatibility.";
+
+            finalist.footwearDebug = {
+                candidateOptions,
+                selectedFootwearId: finalist.footwear.id,
+                selectedFootwearName: finalist.footwear.name,
+                reasonSelected
+            };
+        }
+
+        const primary = finalists[0];
+        console.log("[Footwear Diversity]", {
+            candidates: candidateOptions.map(candidate => ({
+                name: candidate.name,
+                qualityScore: candidate.qualityScore,
+                selectionScore: candidate.selectionScore,
+                styleMatch: candidate.styleMatch,
+                recentUseAdjustment: candidate.recentUseAdjustment,
+                reasons: candidate.reasons
+            })),
+            selectedFootwear: primary.footwear.name,
+            selectedReason: primary.footwearDebug?.reasonSelected
+        });
+    }
+
     private getBaseId(o: Outfit): string {
         return o.type === 'separates' ? `${o.top.id}-${o.bottom.id}` : o.dress.id;
     }
@@ -562,6 +692,63 @@ export class HybridRecommender {
         if (recentIndex <= 2) return -4;
         if (recentIndex <= 5) return -3;
         return -1;
+    }
+
+    private getFootwearRotationPenalty(footwear: Item | undefined, history: OutfitHistory): number {
+        if (!footwear) return 0;
+        const recentIndex = (history.recentFootwearIds || []).indexOf(footwear.id);
+        if (recentIndex === -1) return 0;
+        if (recentIndex === 0) return -5;
+        if (recentIndex <= 2) return -4;
+        if (recentIndex <= 5) return -3;
+        return -1;
+    }
+
+    private getFootwearCandidateScore(
+        outfit: Outfit,
+        preferences: Preferences,
+        history: OutfitHistory
+    ): FootwearCandidateDebug {
+        const footwear = outfit.footwear;
+        const reasons: string[] = [];
+        const qualityScore = this.getQualityScore(outfit);
+        const styleMatch = this.matchesStyle(footwear, preferences.occasion);
+        const text = `${footwear.name || ""} ${footwear.category || ""} ${(footwear.tags || []).join(" ")} ${(footwear.styles || []).join(" ")}`.toLowerCase();
+        const recentUseAdjustment = this.getFootwearRotationPenalty(footwear, history);
+        const selectionScore = qualityScore + recentUseAdjustment;
+        const isCasualRequest = preferences.occasion === "Casual" || preferences.occasion === "Sporty / Athleisure";
+        const isFormalRequest = preferences.occasion === "Formal" || preferences.occasion === "Party / Dressy";
+        const casualFootwear = ["sneaker", "trainer", "flat", "sandal", "casual", "athleisure", "sporty"].some(keyword => text.includes(keyword));
+        const formalFootwear = ["heel", "loafer", "oxford", "dress shoe", "formal", "pump", "boot"].some(keyword => text.includes(keyword));
+
+        if (styleMatch) {
+            reasons.push("style match");
+        }
+        if (isCasualRequest && casualFootwear) {
+            reasons.push("casual/sporty footwear fit");
+        }
+        if (isFormalRequest && formalFootwear) {
+            reasons.push("formal/dressy footwear fit");
+        }
+        if (isFormalRequest && casualFootwear && !formalFootwear) {
+            reasons.push("casual footwear is weaker for formal/dressy request");
+        }
+        if (this.isValidColorCombination(outfit.type === 'separates' ? outfit.top.color : outfit.dress.color, footwear.color)) {
+            reasons.push("color-compatible");
+        }
+        if (recentUseAdjustment !== 0) {
+            reasons.push(`recent footwear selection adjustment ${recentUseAdjustment}`);
+        }
+
+        return {
+            id: footwear.id,
+            name: footwear.name,
+            qualityScore: Number(qualityScore.toFixed(1)),
+            selectionScore: Number(selectionScore.toFixed(1)),
+            styleMatch,
+            recentUseAdjustment,
+            reasons
+        };
     }
 
     private getOuterwearCandidateScore(
@@ -1118,15 +1305,33 @@ export class HybridRecommender {
      * Check if color combination is valid (avoid same bright color)
      */
     private isValidColorCombination(color1: string, color2: string): boolean {
-        const neutralColors = ["Black", "White", "Grey", "Gray", "Beige", "Navy", "Denim", "Brown"];
-        const isNeutral1 = neutralColors.some(n => color1?.includes(n));
-        const isNeutral2 = neutralColors.some(n => color2?.includes(n));
+        const isNeutral1 = this.isNeutralLikeColor(color1);
+        const isNeutral2 = this.isNeutralLikeColor(color2);
 
         // If either is neutral, combination is fine
         if (isNeutral1 || isNeutral2) return true;
 
         // If both are non-neutral, they should be different
         return color1 !== color2;
+    }
+
+    private isNeutralLikeColor(color?: string, item?: Item): boolean {
+        const normalizedColor = (color || "").toLowerCase();
+        const neutralColors = ["black", "white", "grey", "gray", "beige", "navy", "denim", "brown", "cream", "tan", "ivory"];
+
+        if (neutralColors.some(n => normalizedColor.includes(n))) return true;
+
+        if (normalizedColor.includes("multicolor") || normalizedColor.includes("multi-color")) {
+            const metadata = item
+                ? `${item.name || ""} ${item.category || ""} ${(item.tags || []).join(" ")} ${(item.styles || []).join(" ")} ${item.description || ""}`.toLowerCase()
+                : "";
+            const footwearLike = ["footwear", "shoe", "sneaker", "trainer", "flat", "sandal", "boot"].some(keyword => metadata.includes(keyword));
+            const neutralMetadata = neutralColors.some(n => metadata.includes(n));
+
+            return footwearLike || neutralMetadata;
+        }
+
+        return false;
     }
 
     /**
@@ -1202,6 +1407,7 @@ export class HybridRecommender {
             const features = this.extractFeatures(outfit, { ...preferences, recentKeyItemIds: history.recentKeyItemIds });
             const mlScore = this.predictProbability(features);
             const mlScorePercent = clampPercent(mlScore * 100);
+            const heuristicContributions = this.getHeuristicContributions(features);
             let rotationPenalty = 0;
             let weatherPenalty = 0;
             const feedbackAdjustment = 0;
@@ -1233,7 +1439,8 @@ export class HybridRecommender {
                 feedbackAdjustment,
                 preferenceSignal.adjustment,
                 preferenceSignal.reasons,
-                randomAdjustment
+                randomAdjustment,
+                heuristicContributions
             );
 
             return {
@@ -1262,7 +1469,8 @@ export class HybridRecommender {
         feedbackAdjustment: number,
         preferenceAdjustment: number,
         preferenceReasons: string[],
-        randomAdjustment: number
+        randomAdjustment: number,
+        heuristicContributions: HeuristicContribution[] = []
     ): ScoringDetails {
         return calculateScoringDetails({
             ruleScoreRaw,
@@ -1273,6 +1481,7 @@ export class HybridRecommender {
             preferenceReasons,
             mlScorePercent,
             randomAdjustment,
+            heuristicContributions,
         });
     }
 
@@ -1296,6 +1505,7 @@ export class HybridRecommender {
         const features = this.extractFeatures(outfit, { ...preferences, recentKeyItemIds: history.recentKeyItemIds });
         const mlScore = this.predictProbability(features);
         const mlScorePercent = clampPercent(mlScore * 100);
+        const heuristicContributions = this.getHeuristicContributions(features);
         const previousDetails = outfit.scoringDetails;
         const rotationPenalty = (history.recentKeyItemIds.includes(this.getKeyItemId(outfit)) ? -5 : 0) +
             this.getOuterwearRotationPenalty(outfit.outerwear, history);
@@ -1314,7 +1524,8 @@ export class HybridRecommender {
             previousDetails?.feedbackAdjustment ?? 0,
             preferenceSignal.adjustment,
             preferenceSignal.reasons,
-            previousDetails?.randomAdjustment ?? 0
+            previousDetails?.randomAdjustment ?? 0,
+            heuristicContributions
         );
 
         return {
@@ -1426,12 +1637,7 @@ export class HybridRecommender {
      */
     private calculateColorScore(outfit: Outfit): number {
         const items = this.getOutfitItems(outfit);
-        const colors = items.map(item => item.color).filter(Boolean);
-
-        const neutralColors = ["Black", "White", "Grey", "Gray", "Beige", "Navy", "Denim", "Brown"];
-        const neutralCount = colors.filter(c =>
-            neutralColors.some(n => c.includes(n))
-        ).length;
+        const neutralCount = items.filter(item => this.isNeutralLikeColor(item.color, item)).length;
 
         let score = 0;
 
@@ -1441,9 +1647,9 @@ export class HybridRecommender {
         }
 
         // +2 if good color balance (1-2 accent colors with neutrals)
-        const nonNeutralColors = colors.filter(c =>
-            !neutralColors.some(n => c.includes(n))
-        );
+        const nonNeutralColors = items
+            .filter(item => item.color && !this.isNeutralLikeColor(item.color, item))
+            .map(item => item.color);
         const uniqueNonNeutral = new Set(nonNeutralColors).size;
 
         if (uniqueNonNeutral <= 1 && neutralCount >= 1) {
@@ -1519,16 +1725,14 @@ export class HybridRecommender {
     // ========================================================================
 
     /**
-     * Extract features for ML model
-     * Returns: [styleMatchCount, neutralCount, hasContrast, weatherMatch, hasOuterwear, isDress]
+     * Extract deterministic heuristic features. This is not a trained ML model.
      */
     private extractFeatures(outfit: Outfit, preferences: Preferences): number[] {
         const items = this.getOutfitItems(outfit);
         const styleMatches = items.filter(item => this.itemHasStyle(item, preferences.occasion)).length;
         const styleCoverage = items.length > 0 ? styleMatches / items.length : 0;
-        const neutralColors = ["Black", "White", "Grey", "Gray", "Beige", "Navy", "Denim", "Brown"];
         const neutralRatio = items.length > 0
-            ? items.filter(item => neutralColors.some(n => item.color?.includes(n))).length / items.length
+            ? items.filter(item => this.isNeutralLikeColor(item.color, item)).length / items.length
             : 0;
         const hasContrast = outfit.type === 'separates' && outfit.top.color !== outfit.bottom.color ? 1 : 0;
         const weatherQuality = this.calculateWeatherScore(outfit, preferences.weather) / 3;
@@ -1552,6 +1756,7 @@ export class HybridRecommender {
         const keyId = this.getKeyItemId(outfit);
         const recentKeyPenalty = preferences.recentKeyItemIds?.includes(keyId) ? 1 : 0;
         const feedbackPenaltySignal = outfit.outerwear && preferences.penalizedOuterwearIds?.includes(outfit.outerwear.id) ? 1 : 0;
+        const footwearStyleFit = this.calculateFootwearStyleFit(outfit.footwear, preferences.occasion);
 
         return [
             styleCoverage,
@@ -1565,13 +1770,28 @@ export class HybridRecommender {
             outerwearFit,
             weatherSpecificity,
             recentKeyPenalty,
-            feedbackPenaltySignal
+            feedbackPenaltySignal,
+            footwearStyleFit
         ];
     }
 
+    private calculateFootwearStyleFit(footwear: Item, targetStyle: string): number {
+        if (this.matchesStyle(footwear, targetStyle)) return 1;
+
+        const normalizedTarget = this.normalizeStyleKey(targetStyle);
+        const text = `${footwear.name || ""} ${footwear.category || ""} ${(footwear.tags || []).join(" ")} ${(footwear.styles || []).join(" ")} ${footwear.description || ""}`.toLowerCase();
+        const casualFootwear = ["sneaker", "trainer", "flat", "sandal", "casual", "athleisure", "sporty"].some(keyword => text.includes(keyword));
+        const formalFootwear = ["heel", "loafer", "oxford", "dress shoe", "formal", "pump"].some(keyword => text.includes(keyword));
+
+        if ((normalizedTarget === "casual" || normalizedTarget === "sporty/athleisure") && casualFootwear) return 1;
+        if ((normalizedTarget === "formal" || normalizedTarget === "party/dressy") && formalFootwear) return 1;
+        if ((normalizedTarget === "formal" || normalizedTarget === "party/dressy") && casualFootwear && !formalFootwear) return 0;
+
+        return 0.5;
+    }
+
     /**
-     * Logistic regression prediction
-     * P(y=1|x) = 1 / (1 + e^-(w*x + b))
+     * Legacy logistic-style predictor kept unused for old audit comparisons.
      */
     private predictProbabilityLegacy(features: number[]): number {
         let z = this.bias;
@@ -1585,7 +1805,7 @@ export class HybridRecommender {
         return 1 / (1 + Math.exp(-z));
     }
 
-    private predictProbability(features: number[]): number {
+    private getHeuristicContributions(features: number[]): HeuristicContribution[] {
         const [
             styleCoverage = 0,
             neutralRatio = 0,
@@ -1598,21 +1818,107 @@ export class HybridRecommender {
             outerwearFit = 0,
             weatherSpecificity = 0,
             recentKeyPenalty = 0,
-            feedbackPenalty = 0
+            feedbackPenalty = 0,
+            footwearStyleFit = 0
         ] = features;
 
-        const score =
-            45 +
-            (styleCoverage * this.heuristicWeights.styleCoverage) +
-            (colorHarmonyQuality * this.heuristicWeights.colorHarmonyQuality) +
-            (weatherQuality * weatherSpecificity * this.heuristicWeights.weatherQuality) +
-            (categoryCompleteness * this.heuristicWeights.categoryCompleteness) +
-            (neutralRatio * this.heuristicWeights.neutralRatio) +
-            (hasContrast * this.heuristicWeights.hasContrast) +
-            ((hasOuterwear ? outerwearFit * weatherSpecificity : 0) * this.heuristicWeights.outerwearFit) +
-            (isDress * this.heuristicWeights.isDress) +
-            (recentKeyPenalty * this.heuristicWeights.recentKeyPenalty) +
-            (feedbackPenalty * this.heuristicWeights.feedbackPenalty);
+        const outerwearValue = hasOuterwear ? outerwearFit * weatherSpecificity : 0;
+
+        return [
+            {
+                component: "Base Confidence",
+                value: 45,
+                weight: 1,
+                contribution: 45,
+                explanation: "Starting point for a complete candidate outfit."
+            },
+            {
+                component: "Style Match",
+                value: styleCoverage,
+                weight: this.heuristicWeights.styleCoverage,
+                contribution: styleCoverage * this.heuristicWeights.styleCoverage,
+                explanation: "Share of visible items matching the requested style."
+            },
+            {
+                component: "Color Harmony",
+                value: colorHarmonyQuality,
+                weight: this.heuristicWeights.colorHarmonyQuality,
+                contribution: colorHarmonyQuality * this.heuristicWeights.colorHarmonyQuality,
+                explanation: "Neutral balance, accent control, and compatible color pairing."
+            },
+            {
+                component: "Weather Match",
+                value: weatherQuality * weatherSpecificity,
+                weight: this.heuristicWeights.weatherQuality,
+                contribution: weatherQuality * weatherSpecificity * this.heuristicWeights.weatherQuality,
+                explanation: "How well the outfit supports the selected weather."
+            },
+            {
+                component: "Category Completeness",
+                value: categoryCompleteness,
+                weight: this.heuristicWeights.categoryCompleteness,
+                contribution: categoryCompleteness * this.heuristicWeights.categoryCompleteness,
+                explanation: "Whether the outfit has the required clothing categories."
+            },
+            {
+                component: "Neutral Color Support",
+                value: neutralRatio,
+                weight: this.heuristicWeights.neutralRatio,
+                contribution: neutralRatio * this.heuristicWeights.neutralRatio,
+                explanation: "Share of items with neutral or neutral-like colors."
+            },
+            {
+                component: "Color Contrast",
+                value: hasContrast,
+                weight: this.heuristicWeights.hasContrast,
+                contribution: hasContrast * this.heuristicWeights.hasContrast,
+                explanation: "Separates get a boost when top and bottom colors are distinct."
+            },
+            {
+                component: "Outerwear / Footwear Weather Support",
+                value: outerwearValue,
+                weight: this.heuristicWeights.outerwearFit,
+                contribution: outerwearValue * this.heuristicWeights.outerwearFit,
+                explanation: "Weather-specific support from outerwear when relevant."
+            },
+            {
+                component: "Footwear Style Fit",
+                value: footwearStyleFit,
+                weight: this.heuristicWeights.footwearStyleFit,
+                contribution: footwearStyleFit * this.heuristicWeights.footwearStyleFit,
+                explanation: "Whether the selected footwear metadata fits the requested occasion."
+            },
+            {
+                component: "Dress Calibration",
+                value: isDress,
+                weight: this.heuristicWeights.isDress,
+                contribution: isDress * this.heuristicWeights.isDress,
+                explanation: "Keeps dress outfits comparable with separates in the heuristic."
+            },
+            {
+                component: "Recent Key Item Rotation",
+                value: recentKeyPenalty,
+                weight: this.heuristicWeights.recentKeyPenalty,
+                contribution: recentKeyPenalty * this.heuristicWeights.recentKeyPenalty,
+                explanation: "Small quality adjustment when the key clothing item was recently used."
+            },
+            {
+                component: "Feedback Penalty Signal",
+                value: feedbackPenalty,
+                weight: this.heuristicWeights.feedbackPenalty,
+                contribution: feedbackPenalty * this.heuristicWeights.feedbackPenalty,
+                explanation: "Penalty when the outfit includes a specifically disliked outerwear signal."
+            }
+        ].map(contribution => ({
+            ...contribution,
+            value: Number(contribution.value.toFixed(3)),
+            contribution: Number(contribution.contribution.toFixed(1))
+        }));
+    }
+
+    private predictProbability(features: number[]): number {
+        const score = this.getHeuristicContributions(features)
+            .reduce((total, contribution) => total + contribution.contribution, 0);
 
         return clampPercent(score) / 100;
     }

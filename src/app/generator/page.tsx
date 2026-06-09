@@ -29,6 +29,9 @@ export default function GeneratorPage() {
         weather: "Sunny",
         occasion: "Casual"
     })
+    const whyThisOutfit = outfit
+        ? buildWhyThisOutfit(outfit, preferences, preferenceProfile, dislikedItemIds)
+        : []
 
     const recommender = new HybridRecommender()
 
@@ -305,6 +308,21 @@ export default function GeneratorPage() {
                                 )}
                             </div>
 
+                            <div className="w-full max-w-2xl rounded-lg border border-white/10 bg-background/70 p-4 text-sm">
+                                <div className="flex items-center gap-2">
+                                    <Sparkles className="h-4 w-4 text-muted-foreground" />
+                                    <p className="font-medium">Why this outfit?</p>
+                                </div>
+                                <ul className="mt-3 space-y-2 text-xs leading-relaxed text-muted-foreground">
+                                    {whyThisOutfit.map(reason => (
+                                        <li key={reason} className="flex gap-2">
+                                            <span className="text-foreground">-</span>
+                                            <span>{reason}</span>
+                                        </li>
+                                    ))}
+                                </ul>
+                            </div>
+
                             {outfit.scoringDetails && (
                                 <div className="w-full max-w-2xl rounded-lg border border-white/10 bg-background/60 p-4 text-sm">
                                     <p className="font-medium">Score Breakdown</p>
@@ -322,6 +340,17 @@ export default function GeneratorPage() {
                                             <p key={reason}>{reason}</p>
                                         ))}
                                     </div>
+                                    {outfit.scoringDetails.heuristicContributions && outfit.scoringDetails.heuristicContributions.length > 0 && (
+                                        <div className="mt-4 space-y-2 border-t border-white/10 pt-3 text-xs text-muted-foreground">
+                                            <p className="font-medium text-foreground">Heuristic Components</p>
+                                            {outfit.scoringDetails.heuristicContributions.map(component => (
+                                                <div key={component.component} className="grid grid-cols-[1fr_auto] gap-3">
+                                                    <span>{component.component}: {component.explanation}</span>
+                                                    <span>{component.contribution >= 0 ? "+" : ""}{component.contribution.toFixed(1)}</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
                                 </div>
                             )}
                             {outfit.ruleEvaluation && (
@@ -384,6 +413,131 @@ export default function GeneratorPage() {
             </div>
         </div>
     )
+}
+
+function buildWhyThisOutfit(
+    outfit: Outfit,
+    preferences: { weather: string; occasion: string },
+    profile: PreferenceProfile | undefined,
+    dislikedItemIds: Set<string>
+) {
+    const items = getOutfitItems(outfit)
+    const bullets: string[] = []
+
+    const matchingStyleCount = items.filter(item => itemMatchesStyle(item, preferences.occasion)).length
+    if (matchingStyleCount > 0) {
+        bullets.push(`Matches your selected ${preferences.occasion} style across the main outfit pieces.`)
+    }
+
+    const weatherReason = getWeatherReason(outfit, preferences.weather)
+    if (weatherReason) bullets.push(weatherReason)
+
+    const colorReason = getColorReason(items)
+    if (colorReason) bullets.push(colorReason)
+
+    const preferenceReason = getPreferenceReason(items, profile)
+    if (preferenceReason) bullets.push(preferenceReason)
+
+    const outfitIds = new Set(items.map(item => item.id))
+    const avoidsDislikedItems = dislikedItemIds.size > 0 && !Array.from(dislikedItemIds).some(id => outfitIds.has(id))
+    if (avoidsDislikedItems) {
+        bullets.push("Avoids outerwear you previously disliked.")
+    }
+
+    if (outfit.type === "separates") {
+        bullets.push("Builds a complete outfit with a top, bottom, and footwear.")
+    } else {
+        bullets.push("Builds a complete outfit with a dress and footwear.")
+    }
+
+    bullets.push("Ranked highest among the generated outfit candidates.")
+
+    return bullets.slice(0, 5)
+}
+
+function getOutfitItems(outfit: Outfit) {
+    const items: Item[] = [outfit.footwear]
+    if (outfit.type === "separates") {
+        items.push(outfit.top, outfit.bottom)
+    } else {
+        items.push(outfit.dress)
+    }
+    if (outfit.outerwear) items.push(outfit.outerwear)
+    if (outfit.accessory) items.push(outfit.accessory)
+    return items
+}
+
+function itemMatchesStyle(item: Item, selectedStyle: string) {
+    const styles = item.styles?.length ? item.styles : [item.style]
+    return styles.some(style => normalizeLabel(style) === normalizeLabel(selectedStyle) || normalizeLabel(style) === "all styles")
+}
+
+function getWeatherReason(outfit: Outfit, weather: string) {
+    if (weather === "Rainy") {
+        if (outfit.outerwear && isRainFriendly(outfit.outerwear)) {
+            return "Suitable for Rainy weather because it includes weather-friendly outerwear."
+        }
+        if (outfit.accessory && normalizeLabel(outfit.accessory.name).includes("umbrella")) {
+            return "Suitable for Rainy weather because it includes umbrella support."
+        }
+        return "Selected with your Rainy weather preference in mind."
+    }
+
+    if ((weather === "Cold" || weather === "Snowy") && outfit.outerwear) {
+        return `Suitable for ${weather} weather because it includes an outer layer.`
+    }
+
+    if ((weather === "Warm" || weather === "Sunny") && !outfit.outerwear) {
+        return `Suitable for ${weather} weather because it keeps the outfit lightweight.`
+    }
+
+    return `Selected for your ${weather} weather preference.`
+}
+
+function getColorReason(items: Item[]) {
+    const colors = Array.from(new Set(items.map(item => item.color).filter(Boolean)))
+    if (colors.length === 0) return null
+
+    const neutralColors = ["black", "white", "grey", "gray", "beige", "navy", "denim", "brown"]
+    const neutralMatches = colors.filter(color => neutralColors.some(neutral => normalizeLabel(color).includes(neutral)))
+    if (neutralMatches.length >= 2) {
+        return `Uses ${neutralMatches.slice(0, 2).join(" and ")}, a balanced neutral color pairing.`
+    }
+    if (colors.length >= 2) {
+        return `Pairs ${colors.slice(0, 2).join(" and ")} for clear color contrast.`
+    }
+    return `Keeps the color palette focused around ${colors[0]}.`
+}
+
+function getPreferenceReason(items: Item[], profile: PreferenceProfile | undefined) {
+    if (!profile) return null
+
+    const likedColors = getPositiveNetMatches(items.map(item => item.color), profile.likedColors, profile.dislikedColors)
+    if (likedColors.length > 0) {
+        return `Uses ${likedColors.slice(0, 2).join(" and ")}, colors you have liked before.`
+    }
+
+    const styles = items.flatMap(item => item.styles?.length ? item.styles : [item.style]).filter(Boolean)
+    const likedStyles = getPositiveNetMatches(styles, profile.likedStyles, profile.dislikedStyles)
+    if (likedStyles.length > 0) {
+        return `Reflects ${likedStyles[0]}, a style pattern you have liked before.`
+    }
+
+    return null
+}
+
+function getPositiveNetMatches(values: Array<string | undefined>, liked: Record<string, number>, disliked: Record<string, number>) {
+    const uniqueValues = Array.from(new Set(values.filter(Boolean))) as string[]
+    return uniqueValues.filter(value => (liked[value] || 0) - (disliked[value] || 0) > 0)
+}
+
+function isRainFriendly(item: Item) {
+    const text = normalizeLabel(`${item.name} ${item.category} ${(item.tags || []).join(" ")}`)
+    return ["rain", "waterproof", "windcheater", "trench", "parka", "anorak", "hoodie", "nylon", "boot"].some(keyword => text.includes(keyword))
+}
+
+function normalizeLabel(value?: string) {
+    return (value || "").trim().toLowerCase()
 }
 
 function OutfitCard({ item, label }: { item: Item | null, label: string }) {
