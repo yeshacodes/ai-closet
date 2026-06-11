@@ -2,50 +2,84 @@
 
 import { useState, useEffect } from "react"
 import { motion } from "framer-motion"
-import { Sparkles, ThumbsUp, ThumbsDown, AlertCircle } from "lucide-react"
+import { CheckCircle2, Sparkles, ThumbsUp, ThumbsDown, AlertCircle } from "lucide-react"
 import { supabase } from "@/lib/supabase"
 import { Item } from "@/types"
 import { Button } from "@/components/ui/button"
 import { Select } from "@/components/ui/select"
 import { Card, CardContent } from "@/components/ui/card"
 import { Loader } from "@/components/ui/loader"
-import { HybridRecommender, Outfit, PreferenceProfile, Preferences } from "@/lib/recommender"
+import { HybridRecommender, Outfit, PreferenceProfile, Preferences, WearHistoryContext, WeatherContext } from "@/lib/recommender"
+import {
+    buildOutfitHistoryPayload,
+    buildWearHistoryContext,
+    fetchOutfitHistory,
+    getOutfitCombinationId,
+    OutfitHistoryRow,
+    saveOutfitHistory
+} from "@/lib/outfitHistory"
+import { getDisplayColor, getDisplayItemName } from "@/lib/itemDisplay"
+import { fetchCurrentWeather, CurrentWeatherResult } from "@/lib/weather"
+import { getWeatherBadgeIcon } from "@/lib/weatherMapping"
+import { useSessionMode } from "@/lib/sessionMode"
+import { getScopedInsertData, getScopeLabel, scopedSelect } from "@/lib/dataScope"
+import { EmptyState, PageShell } from "@/components/ui/page-shell"
 
 const weathers = ["Sunny", "Rainy", "Cold", "Warm", "Snowy"]
 const occasions = ["Casual", "Smart Casual", "Formal", "Party / Dressy", "Sporty / Athleisure", "Streetwear"]
 
 export default function GeneratorPage() {
+    const scope = useSessionMode()
     const [items, setItems] = useState<Item[]>([])
     const [loading, setLoading] = useState(true)
     const [generating, setGenerating] = useState(false)
     const [outfit, setOutfit] = useState<Outfit | null>(null)
     const [error, setError] = useState<string | null>(null)
     const [feedbackGiven, setFeedbackGiven] = useState(false)
+    const [wornSaving, setWornSaving] = useState(false)
+    const [wornMessage, setWornMessage] = useState<string | null>(null)
+    const [detectingWeather, setDetectingWeather] = useState(false)
+    const [liveWeather, setLiveWeather] = useState<CurrentWeatherResult | null>(null)
+    const [weatherMessage, setWeatherMessage] = useState<string | null>(null)
+    const [weatherMessageType, setWeatherMessageType] = useState<"success" | "error" | "loading" | null>(null)
 
     const [dislikedItemIds, setDislikedItemIds] = useState<Set<string>>(new Set())
     const [preferenceProfile, setPreferenceProfile] = useState<PreferenceProfile | undefined>(undefined)
+    const [outfitHistory, setOutfitHistory] = useState<OutfitHistoryRow[]>([])
+    const [wearHistory, setWearHistory] = useState<WearHistoryContext | undefined>(undefined)
 
     const [preferences, setPreferences] = useState({
         weather: "Sunny",
         occasion: "Casual"
     })
+    const activeWeatherContext: WeatherContext | undefined = liveWeather
+        ? {
+            temperatureF: liveWeather.temperatureF,
+            temperatureC: liveWeather.temperatureC,
+            weatherCode: liveWeather.weatherCode,
+            mappedWeatherCategory: liveWeather.mappedWeatherCategory,
+            source: liveWeather.source,
+            detectedAt: liveWeather.detectedAt
+        }
+        : undefined
     const whyThisOutfit = outfit
-        ? buildWhyThisOutfit(outfit, preferences, preferenceProfile, dislikedItemIds)
+        ? buildWhyThisOutfit(outfit, preferences, preferenceProfile, dislikedItemIds, activeWeatherContext)
         : []
 
     const recommender = new HybridRecommender()
 
     useEffect(() => {
-        fetchItems()
-    }, [])
+        if (!scope.isLoading) fetchItems()
+    }, [scope.isLoading, scope.mode, scope.userId])
 
     const fetchItems = async () => {
         try {
-            const { data, error } = await supabase.from('items').select('*')
+            const { data, error } = await scopedSelect('items', scope)
             if (error) throw error
-            const wardrobeItems = data || []
+            const wardrobeItems = (data || []) as Item[]
             setItems(wardrobeItems)
             await fetchFeedbackProfile(wardrobeItems)
+            await refreshWearHistory()
         } catch (error) {
             console.error('Error fetching items:', error)
         } finally {
@@ -53,15 +87,33 @@ export default function GeneratorPage() {
         }
     }
 
+    const refreshWearHistory = async () => {
+        try {
+            const rows = await fetchOutfitHistory(100, scope)
+            setOutfitHistory(rows)
+            setWearHistory(buildWearHistoryContext(rows))
+        } catch (error) {
+            console.error('Error fetching outfit history:', error)
+        }
+    }
+
     const fetchFeedbackProfile = async (wardrobeItems = items) => {
         try {
-            const { data, error } = await supabase
-                .from('outfit_feedback')
-                .select('*')
+            const { data, error } = await scopedSelect('outfit_feedback', scope)
 
             if (error) throw error
 
-            if (data) {
+            const feedbackRows = (data || []) as Array<{
+                liked?: boolean;
+                top_id?: string | null;
+                bottom_id?: string | null;
+                dress_id?: string | null;
+                footwear_id?: string | null;
+                outerwear_id?: string | null;
+                requested_style?: string | null;
+            }>
+
+            if (feedbackRows.length > 0) {
                 const profile: PreferenceProfile = {
                     likedColors: {},
                     dislikedColors: {},
@@ -81,7 +133,7 @@ export default function GeneratorPage() {
                     bucket[key] = (bucket[key] || 0) + 1
                 }
 
-                for (const row of data) {
+                for (const row of feedbackRows) {
                     if (typeof row.liked !== "boolean") continue
                     const ids = [row.top_id, row.bottom_id, row.dress_id, row.footwear_id, row.outerwear_id].filter(Boolean) as string[]
                     const rowItems = ids.map(id => itemMap.get(id)).filter(Boolean) as Item[]
@@ -114,6 +166,7 @@ export default function GeneratorPage() {
         setError(null)
         setOutfit(null)
         setFeedbackGiven(false)
+        setWornMessage(null)
 
         setTimeout(() => {
             try {
@@ -121,7 +174,9 @@ export default function GeneratorPage() {
                     weather: preferences.weather as Preferences["weather"],
                     occasion: preferences.occasion as Preferences["occasion"],
                     penalizedOuterwearIds: Array.from(dislikedItemIds),
-                    preferenceProfile
+                    preferenceProfile,
+                    wearHistory,
+                    weatherContext: activeWeatherContext
                 }
                 const result = recommender.generateOutfit(items, prefs)
 
@@ -141,6 +196,10 @@ export default function GeneratorPage() {
 
     const handleFeedback = async (liked: boolean) => {
         if (!outfit) return
+        if (scope.isDemo) {
+            alert("Demo mode is read-only. Sign in to save your own changes.")
+            return
+        }
 
         try {
             // If disliked, add outerwear to disliked list immediately
@@ -159,7 +218,7 @@ export default function GeneratorPage() {
                 final_score_after_preferences: outfit.scoringDetails?.finalScoreAfterPreferences !== undefined ? outfit.scoringDetails.finalScoreAfterPreferences / 100 : outfit.score
             }
 
-            const feedbackData: Record<string, unknown> = {
+            const feedbackData: Record<string, unknown> = getScopedInsertData({
                 footwear_id: outfit.footwear.id,
                 outerwear_id: outfit.outerwear?.id || null,
                 requested_style: preferences.occasion,
@@ -170,7 +229,7 @@ export default function GeneratorPage() {
                 ml_score: outfit.mlScore,
                 final_score: outfit.score,
                 ...personalizationFields
-            }
+            }, scope)
 
             if (outfit.type === 'separates') {
                 feedbackData.top_id = outfit.top.id
@@ -214,25 +273,145 @@ export default function GeneratorPage() {
         }
     }
 
+    const handleMarkAsWorn = async () => {
+        if (!outfit) return
+        if (scope.isDemo) {
+            setWornMessage("Demo mode is read-only. Sign in to save your own changes.")
+            return
+        }
+
+        const outfitId = getOutfitCombinationId(outfit)
+        const duplicateWindowMs = 2 * 60 * 1000
+        const recentDuplicate = outfitHistory.some(row =>
+            row.outfit_id === outfitId &&
+            Date.now() - new Date(row.worn_at).getTime() < duplicateWindowMs
+        )
+
+        if (recentDuplicate) {
+            setWornMessage("This outfit was just marked as worn.")
+            return
+        }
+
+        try {
+            setWornSaving(true)
+            const payload = buildOutfitHistoryPayload(outfit, {
+                weather: preferences.weather as Preferences["weather"],
+                occasion: preferences.occasion as Preferences["occasion"]
+            })
+            await saveOutfitHistory(payload, scope)
+            setWornMessage("Marked as worn. Future recommendations will rotate from this history.")
+            await refreshWearHistory()
+        } catch (err: unknown) {
+            const errorInfo = err as { message?: string }
+            console.error("Error saving outfit history:", err)
+            setWornMessage(errorInfo.message || "Unable to mark outfit as worn.")
+        } finally {
+            setWornSaving(false)
+        }
+    }
+
+    const handleUseCurrentWeather = async () => {
+        try {
+            setDetectingWeather(true)
+            setWeatherMessage("Detecting weather...")
+            setWeatherMessageType("loading")
+
+            const currentWeather = await fetchCurrentWeather()
+            setLiveWeather(currentWeather)
+            setPreferences(prev => ({
+                ...prev,
+                weather: currentWeather.category
+            }))
+            setWeatherMessage(`${Math.round(currentWeather.temperatureF)}°F • ${currentWeather.mappedWeatherCategory} • Live weather`)
+            setWeatherMessageType("success")
+        } catch (error) {
+            console.error("Unable to detect weather:", error)
+            setLiveWeather(null)
+            setWeatherMessage("Unable to detect weather. Please choose manually.")
+            setWeatherMessageType("error")
+        } finally {
+            setDetectingWeather(false)
+        }
+    }
+
     return (
-        <div className="max-w-4xl mx-auto space-y-8">
-            <div className="text-center space-y-2">
-                <h1 className="text-3xl font-bold">Outfit Generator</h1>
-                <p className="text-muted-foreground">AI-powered recommendations based on your style and weather.</p>
+        <PageShell size="default" className="space-y-8">
+            <div className="mx-auto max-w-3xl space-y-3 text-center">
+                <p className="fashion-eyebrow">Recommendation studio</p>
+                <h1 className="text-4xl font-semibold tracking-tight">Outfit Generator</h1>
+                <p className="text-muted-foreground">Generate a scored outfit using style, weather, wardrobe history, and learned preferences.</p>
+                <span className="inline-flex rounded-full border border-white/10 bg-secondary/30 px-3 py-1 text-xs text-muted-foreground">
+                    {getScopeLabel(scope)}
+                </span>
             </div>
 
             {/* Controls */}
-            <Card>
+            <Card className="bg-white/[0.035]">
                 <CardContent className="p-6">
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+                    <div className="grid grid-cols-1 items-end gap-4 md:grid-cols-[1fr_1fr_auto]">
                         <div className="space-y-2">
                             <label className="text-sm font-medium">Weather</label>
                             <Select
                                 value={preferences.weather}
-                                onChange={e => setPreferences({ ...preferences, weather: e.target.value })}
+                                onChange={e => {
+                                    setPreferences({ ...preferences, weather: e.target.value })
+                                    if (liveWeather && e.target.value !== liveWeather.category) {
+                                        setLiveWeather(null)
+                                        setWeatherMessage(null)
+                                        setWeatherMessageType(null)
+                                    }
+                                }}
                             >
                                 {weathers.map(w => <option key={w} value={w}>{w}</option>)}
                             </Select>
+                            <div className="space-y-2">
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    className="w-full justify-start border-white/10 bg-background/70 text-xs"
+                                    onClick={handleUseCurrentWeather}
+                                    disabled={detectingWeather}
+                                >
+                                    <span className="mr-2">🌤</span>
+                                    {detectingWeather ? "Detecting weather..." : "Use Current Weather"}
+                                </Button>
+                                {weatherMessage && (
+                                    <div className="space-y-1">
+                                        <div className={`inline-flex max-w-full items-center rounded-full border px-3 py-1 text-xs ${weatherMessageType === "error"
+                                            ? "border-destructive/30 bg-destructive/10 text-destructive"
+                                            : weatherMessageType === "loading"
+                                                ? "border-white/10 bg-secondary/40 text-muted-foreground"
+                                                : "border-white/10 bg-secondary/50 text-muted-foreground"
+                                            }`}>
+                                            {weatherMessageType === "success" && liveWeather && (
+                                                <span className="mr-1.5">{getWeatherBadgeIcon(liveWeather.category)}</span>
+                                            )}
+                                            <span className="truncate">{weatherMessage}</span>
+                                            {weatherMessageType === "success" && (
+                                                <button
+                                                    type="button"
+                                                    className="ml-2 border-l border-white/10 pl-2 text-foreground/80 hover:text-foreground"
+                                                    onClick={handleUseCurrentWeather}
+                                                    disabled={detectingWeather}
+                                                >
+                                                    Refresh
+                                                </button>
+                                            )}
+                                        </div>
+                                        {weatherMessageType === "success" && liveWeather?.forecastOverrideApplied && (
+                                            <p className="text-[11px] text-muted-foreground">
+                                                Rain expected within the next few hours
+                                            </p>
+                                        )}
+                                        {weatherMessageType === "success" && !liveWeather?.forecastOverrideApplied && liveWeather?.rainChanceNext3Hours !== undefined && (
+                                            <p className="text-[11px] text-muted-foreground">
+                                                Rain chance next 3h: {Math.round(liveWeather.rainChanceNext3Hours)}%
+                                            </p>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
                         </div>
                         <div className="space-y-2">
                             <label className="text-sm font-medium">Occasion / Style</label>
@@ -247,7 +426,7 @@ export default function GeneratorPage() {
                             size="lg"
                             onClick={generateOutfit}
                             disabled={loading || generating}
-                            className="w-full"
+                            className="w-full md:w-auto"
                         >
                             {generating ? <Loader className="mr-2" /> : <Sparkles className="mr-2 h-4 w-4" />}
                             Generate Outfit
@@ -294,7 +473,7 @@ export default function GeneratorPage() {
                         </div>
 
                         {/* Feedback Section */}
-                        <div className="flex flex-col items-center gap-4 p-6 bg-secondary/20 rounded-xl">
+                        <div className="flex flex-col items-center gap-4 rounded-lg border border-white/10 bg-white/[0.035] p-6">
                             <p className="font-medium">How do you like this outfit?</p>
                             <div className="flex gap-4 text-xs text-muted-foreground">
                                 <span>Final Score: {(outfit.score * 100).toFixed(1)}%</span>
@@ -305,6 +484,20 @@ export default function GeneratorPage() {
                                         <span>•</span>
                                         <span>ML Score: {(outfit.mlScore * 100).toFixed(1)}%</span>
                                     </>
+                                )}
+                            </div>
+                            <div className="flex flex-col items-center gap-2">
+                                <Button
+                                    variant="secondary"
+                                    className="gap-2"
+                                    onClick={handleMarkAsWorn}
+                                    disabled={wornSaving}
+                                >
+                                    <CheckCircle2 className="h-4 w-4" />
+                                    {wornSaving ? "Saving..." : "Mark as Worn"}
+                                </Button>
+                                {wornMessage && (
+                                    <p className="max-w-md text-center text-xs text-muted-foreground">{wornMessage}</p>
                                 )}
                             </div>
 
@@ -340,6 +533,20 @@ export default function GeneratorPage() {
                                             <p key={reason}>{reason}</p>
                                         ))}
                                     </div>
+                                    {outfit.selectionDebug?.weatherContext && (
+                                        <div className="mt-4 space-y-2 border-t border-white/10 pt-3 text-xs text-muted-foreground">
+                                            <p className="font-medium text-foreground">Live Weather Practicality</p>
+                                            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                                <span>Detected Temperature: {Math.round(outfit.selectionDebug.weatherContext.temperatureF)}°F</span>
+                                                <span>Mapped Weather: {outfit.selectionDebug.weatherContext.mappedWeatherCategory}</span>
+                                                <span>Temperature Adjustment: {outfit.selectionDebug.temperaturePracticalityAdjustment >= 0 ? "+" : ""}{outfit.selectionDebug.temperaturePracticalityAdjustment.toFixed(1)}</span>
+                                                <span>Affected Items: {outfit.selectionDebug.affectedItemTypes.length > 0 ? outfit.selectionDebug.affectedItemTypes.join(", ") : "None"}</span>
+                                            </div>
+                                            {outfit.selectionDebug.temperaturePracticalityReasons.map(reason => (
+                                                <p key={reason}>{reason}</p>
+                                            ))}
+                                        </div>
+                                    )}
                                     {outfit.scoringDetails.heuristicContributions && outfit.scoringDetails.heuristicContributions.length > 0 && (
                                         <div className="mt-4 space-y-2 border-t border-white/10 pt-3 text-xs text-muted-foreground">
                                             <p className="font-medium text-foreground">Heuristic Components</p>
@@ -382,6 +589,7 @@ export default function GeneratorPage() {
                                         variant="outline"
                                         className="gap-2 hover:bg-green-100 hover:text-green-700 hover:border-green-200"
                                         onClick={() => handleFeedback(true)}
+                                        disabled={scope.isDemo}
                                     >
                                         <ThumbsUp className="h-4 w-4" /> Like
                                     </Button>
@@ -389,6 +597,7 @@ export default function GeneratorPage() {
                                         variant="outline"
                                         className="gap-2 hover:bg-red-100 hover:text-red-700 hover:border-red-200"
                                         onClick={() => handleFeedback(false)}
+                                        disabled={scope.isDemo}
                                     >
                                         <ThumbsDown className="h-4 w-4" /> Dislike
                                     </Button>
@@ -405,13 +614,14 @@ export default function GeneratorPage() {
                         </div>
                     </div>
                 ) : (
-                    <div className="flex flex-col items-center justify-center h-64 text-muted-foreground border-2 border-dashed rounded-xl">
-                        <Sparkles className="h-10 w-10 mb-2 opacity-20" />
-                        <p>Select preferences and click Generate to see your outfit.</p>
-                    </div>
+                    <EmptyState
+                        icon={<Sparkles className="h-9 w-9" />}
+                        title="Ready to style your closet"
+                        description="Choose weather and occasion, then generate the strongest available outfit from your wardrobe."
+                    />
                 )}
             </div>
-        </div>
+        </PageShell>
     )
 }
 
@@ -419,7 +629,8 @@ function buildWhyThisOutfit(
     outfit: Outfit,
     preferences: { weather: string; occasion: string },
     profile: PreferenceProfile | undefined,
-    dislikedItemIds: Set<string>
+    dislikedItemIds: Set<string>,
+    weatherContext?: WeatherContext
 ) {
     const items = getOutfitItems(outfit)
     const bullets: string[] = []
@@ -432,6 +643,9 @@ function buildWhyThisOutfit(
     const weatherReason = getWeatherReason(outfit, preferences.weather)
     if (weatherReason) bullets.push(weatherReason)
 
+    const liveWeatherReason = getLiveWeatherReason(outfit, weatherContext)
+    if (liveWeatherReason) bullets.push(liveWeatherReason)
+
     const colorReason = getColorReason(items)
     if (colorReason) bullets.push(colorReason)
 
@@ -442,6 +656,20 @@ function buildWhyThisOutfit(
     const avoidsDislikedItems = dislikedItemIds.size > 0 && !Array.from(dislikedItemIds).some(id => outfitIds.has(id))
     if (avoidsDislikedItems) {
         bullets.push("Avoids outerwear you previously disliked.")
+    }
+
+    if (
+        outfit.selectionDebug?.wearHistoryAdjustment === 0 &&
+        outfit.selectionDebug.wearHistoryReasons.some(reason => reason.toLowerCase().includes("introduces wardrobe variety"))
+    ) {
+        bullets.push("This outfit introduces wardrobe variety from your worn history.")
+    } else if ((outfit.selectionDebug?.wearHistoryAdjustment || 0) < 0) {
+        const reasonText = outfit.selectionDebug?.wearHistoryReasons.join(" ").toLowerCase() || ""
+        if (reasonText.includes("footwear")) {
+            bullets.push("This recommendation rotates frequently used footwear when close alternatives are available.")
+        } else {
+            bullets.push("This recommendation avoids leaning too heavily on items worn recently.")
+        }
     }
 
     if (outfit.type === "separates") {
@@ -492,6 +720,28 @@ function getWeatherReason(outfit: Outfit, weather: string) {
     }
 
     return `Selected for your ${weather} weather preference.`
+}
+
+function getLiveWeatherReason(outfit: Outfit, weatherContext?: WeatherContext) {
+    if (!weatherContext || weatherContext.source !== "live") return null
+
+    const temp = Math.round(weatherContext.temperatureF)
+
+    if (weatherContext.mappedWeatherCategory === "Rainy") {
+        return "Keeps the outfit practical for rainy weather."
+    }
+
+    if (temp >= 85) {
+        if (outfit.outerwear) return `Balanced for today's ${temp}°F weather while still matching your outfit constraints.`
+        return `Chosen for today's ${temp}°F weather with lighter pieces.`
+    }
+
+    if (temp < 50) {
+        if (outfit.outerwear) return `Includes warmer layers because live weather is ${temp}°F.`
+        return `Selected with today's ${temp}°F weather in mind.`
+    }
+
+    return `Selected for today's ${temp}°F live weather.`
 }
 
 function getColorReason(items: Item[]) {
@@ -553,13 +803,13 @@ function OutfitCard({ item, label }: { item: Item | null, label: string }) {
             className="space-y-3"
         >
             <div className="text-center font-medium text-muted-foreground uppercase tracking-wider text-xs">{label}</div>
-            <Card className="overflow-hidden h-full">
-                <div className="h-64 md:h-72 relative bg-muted/60 flex items-center justify-center">
-                    <img src={item.image_url} alt={item.name} className="object-contain w-full h-full p-3" />
+            <Card className="h-full overflow-hidden">
+                <div className="relative flex h-64 items-center justify-center bg-zinc-950/70 md:h-72">
+                    <img src={item.image_url} alt={getDisplayItemName(item)} className="object-contain w-full h-full p-3" />
                 </div>
                 <CardContent className="p-4">
-                    <h3 className="font-semibold">{item.name}</h3>
-                    <p className="text-sm text-muted-foreground">{item.color}</p>
+                    <h3 className="font-semibold">{getDisplayItemName(item)}</h3>
+                    <p className="text-sm text-muted-foreground">{getDisplayColor(item.color)}</p>
                     <p className="text-xs text-muted-foreground mt-1">{displayStyle}</p>
                 </CardContent>
             </Card>

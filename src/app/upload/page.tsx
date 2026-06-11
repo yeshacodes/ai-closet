@@ -11,6 +11,9 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Loader } from "@/components/ui/loader"
 import { predictItemDetails } from "@/utils/heuristics"
 import { CLOSET_CATEGORIES } from "@/lib/categories"
+import { useSessionMode } from "@/lib/sessionMode"
+import { getScopedInsertData } from "@/lib/dataScope"
+import { PageShell } from "@/components/ui/page-shell"
 
 const categories = [...CLOSET_CATEGORIES]
 const stylesList = ["Casual", "Smart Casual", "Formal", "Party / Dressy", "Sporty / Athleisure", "Streetwear"]
@@ -37,6 +40,7 @@ type PredictionLogData = {
 }
 
 export default function UploadPage() {
+    const scope = useSessionMode()
     const router = useRouter()
     const [file, setFile] = useState<File | null>(null)
     const [previewUrl, setPreviewUrl] = useState<string | null>(null)
@@ -87,6 +91,10 @@ export default function UploadPage() {
 
     const handleSmartAI = async () => {
         if (!file) return
+        if (scope.isDemo) {
+            setAiNote("Demo mode is read-only. Sign in to save your own changes.")
+            return
+        }
         setSimulatingAI(true)
         setAiNote("Analyzing image with OpenAI Vision...")
 
@@ -95,7 +103,7 @@ export default function UploadPage() {
             let currentPath = uploadedPath
             if (!currentPath) {
                 const fileExt = file.name.split('.').pop()
-                currentPath = `${Math.random()}.${fileExt}`
+                currentPath = `${scope.userId || "user"}/${Math.random()}.${fileExt}`
                 const { error: uploadError } = await supabase.storage
                     .from('closet')
                     .upload(currentPath, file)
@@ -246,6 +254,10 @@ export default function UploadPage() {
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault()
         if (!file) return
+        if (scope.isDemo) {
+            alert("Demo mode is read-only. Sign in to save your own changes.")
+            return
+        }
 
         setLoading(true)
         try {
@@ -253,7 +265,7 @@ export default function UploadPage() {
             let fileName = uploadedPath
             if (!fileName) {
                 const fileExt = file.name.split('.').pop()
-                fileName = `${Math.random()}.${fileExt}`
+                fileName = `${scope.userId || "user"}/${Math.random()}.${fileExt}`
                 const { error: uploadError } = await supabase.storage
                     .from('closet')
                     .upload(fileName, file)
@@ -269,7 +281,7 @@ export default function UploadPage() {
             // 3. Save Metadata
             const { data: itemData, error: dbError } = await supabase
                 .from('items')
-                .insert({
+                .insert(getScopedInsertData({
                     name: formData.name,
                     category: formData.category,
                     color: formData.color,
@@ -279,7 +291,7 @@ export default function UploadPage() {
                     description: formData.description,
                     image_url: publicUrl,
                     tags: [formData.category, ...formData.styles, ...formData.weather, formData.color]
-                })
+                }, scope))
                 .select()
                 .single()
 
@@ -295,7 +307,7 @@ export default function UploadPage() {
 
             // 4. Log Prediction vs Actual (if prediction was made)
             if (predictionRef.current && itemData) {
-                const { error: logError } = await supabase.from('ai_prediction_logs').insert({
+                const { error: logError } = await supabase.from('ai_prediction_logs').insert(getScopedInsertData({
                     item_id: itemData.id,
                     predicted_category: predictionRef.current.category,
                     predicted_style: predictionRef.current.styles ? predictionRef.current.styles.join(", ") : null,
@@ -314,7 +326,7 @@ export default function UploadPage() {
                         heuristic_color: predictionRef.current.heuristic_color,
                         detected_color: predictionRef.current.detected_color
                     }
-                })
+                }, scope))
 
                 if (logError) {
                     console.error('Supabase logging error:', {
@@ -339,11 +351,16 @@ export default function UploadPage() {
     }
 
     return (
-        <div className="max-w-2xl mx-auto">
-            <Card>
+        <PageShell size="narrow">
+            <Card className="bg-white/[0.035]">
                 <CardHeader>
-                    <CardTitle>Add New Item</CardTitle>
-                    <CardDescription>Upload a photo of your clothing item to add it to your digital wardrobe.</CardDescription>
+                    <p className="fashion-eyebrow">Closet intake</p>
+                    <CardTitle className="text-3xl font-semibold tracking-tight">Add New Item</CardTitle>
+                    <CardDescription>
+                        {scope.isDemo
+                            ? "You're exploring the Demo Closet. Create an account to save your own wardrobe items."
+                            : "Upload a photo of your clothing item to add it to your personal wardrobe."}
+                    </CardDescription>
                 </CardHeader>
                 <CardContent>
                     <form onSubmit={handleSubmit} className="space-y-6">
@@ -351,7 +368,7 @@ export default function UploadPage() {
                         {/* Image Upload Area */}
                         <div className="space-y-2">
                             <label className="text-sm font-medium">Item Image</label>
-                            <div className="border-2 border-dashed rounded-lg p-4 text-center hover:bg-accent/50 transition-colors relative min-h-[200px] flex flex-col items-center justify-center">
+                            <div className="relative flex min-h-[240px] flex-col items-center justify-center rounded-lg border border-dashed border-white/15 bg-zinc-950/55 p-5 text-center transition-colors hover:border-primary/45 hover:bg-primary/5">
                                 {previewUrl ? (
                                     <div className="relative w-full h-64">
                                         <img src={previewUrl} alt="Preview" className="w-full h-full object-contain rounded-md" />
@@ -388,7 +405,7 @@ export default function UploadPage() {
                                     variant="secondary"
                                     className="w-full"
                                     onClick={handleSmartAI}
-                                    disabled={simulatingAI || loading}
+                                    disabled={simulatingAI || loading || scope.isDemo}
                                 >
                                     {simulatingAI ? (
                                         <>
@@ -574,14 +591,14 @@ export default function UploadPage() {
                             />
                         </div>
 
-                        <Button type="submit" className="w-full" disabled={loading || !file || formData.styles.length === 0}>
+                        <Button type="submit" className="w-full" disabled={loading || !file || formData.styles.length === 0 || scope.isDemo}>
                             {loading ? <Loader className="mr-2" /> : null}
-                            {loading ? "Uploading..." : "Save to Wardrobe"}
+                            {scope.isDemo ? "Create account to save wardrobe items" : loading ? "Uploading..." : "Save to Wardrobe"}
                         </Button>
 
                     </form>
                 </CardContent>
             </Card>
-        </div>
+        </PageShell>
     )
 }

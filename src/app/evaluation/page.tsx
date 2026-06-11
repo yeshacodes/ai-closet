@@ -1,11 +1,13 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
-import { supabase } from "@/lib/supabase"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Loader } from "@/components/ui/loader"
 import { BarChart3, Brain, CheckCircle2, Database, Info, ThumbsUp, TrendingUp, type LucideIcon } from "lucide-react"
 import { Item } from "@/types"
+import { useSessionMode } from "@/lib/sessionMode"
+import { getScopeLabel, scopedSelect } from "@/lib/dataScope"
+import { PageShell } from "@/components/ui/page-shell"
 
 type FeedbackRow = {
     created_at?: string | null
@@ -104,6 +106,7 @@ const emptyPreferences: PreferenceSummary = {
 }
 
 export default function EvaluationPage() {
+    const scope = useSessionMode()
     const [metrics, setMetrics] = useState<Metrics>(emptyMetrics)
     const [preferences, setPreferences] = useState<PreferenceSummary>(emptyPreferences)
     const [showRawCounts, setShowRawCounts] = useState(false)
@@ -113,8 +116,8 @@ export default function EvaluationPage() {
     const fetchEvaluationData = useCallback(async () => {
         try {
             const [{ data: feedbackData, error: feedbackError }, { data: itemData, error: itemError }] = await Promise.all([
-                supabase.from("outfit_feedback").select("*"),
-                supabase.from("items").select("*")
+                scopedSelect("outfit_feedback", scope),
+                scopedSelect("items", scope)
             ])
 
             if (feedbackError) throw feedbackError
@@ -130,23 +133,27 @@ export default function EvaluationPage() {
         } finally {
             setLoading(false)
         }
-    }, [])
+    }, [scope.mode, scope.userId])
 
     useEffect(() => {
-        fetchEvaluationData()
-    }, [fetchEvaluationData])
+        if (!scope.isLoading) fetchEvaluationData()
+    }, [fetchEvaluationData, scope.isLoading])
 
     if (loading) {
         return <div className="flex justify-center p-20"><Loader className="h-8 w-8" /></div>
     }
 
     return (
-        <div className="space-y-8">
-            <div className="space-y-2 text-center">
-                <h1 className="text-3xl font-bold">Recommender Evaluation</h1>
+        <PageShell size="default" className="space-y-8">
+            <div className="mx-auto max-w-3xl space-y-3 text-center">
+                <p className="fashion-eyebrow">Learning dashboard</p>
+                <h1 className="text-4xl font-semibold tracking-tight">Recommender Evaluation</h1>
                 <p className="text-muted-foreground">
                     This system evaluates recommendation quality using real feedback and learned preference signals.
                 </p>
+                <span className="inline-flex rounded-full border border-white/10 bg-secondary/30 px-3 py-1 text-xs text-muted-foreground">
+                    {getScopeLabel(scope)}
+                </span>
             </div>
 
             <Card>
@@ -244,7 +251,7 @@ export default function EvaluationPage() {
                     )}
                 </CardContent>
             </Card>
-        </div>
+        </PageShell>
     )
 }
 

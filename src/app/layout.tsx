@@ -4,6 +4,8 @@ import "./globals.css";
 import { Navbar } from "@/components/Navbar";
 import { cn } from "@/lib/utils";
 import Footer from "@/components/ui/footer";
+import { SessionModeProvider } from "@/lib/sessionMode";
+import { DemoModeBanner } from "@/components/DemoModeBanner";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -20,11 +22,14 @@ export default function RootLayout({
   return (
      <html lang="en" className="dark">
       <body className={cn(inter.className, "min-h-screen max-w-full overflow-x-hidden bg-black text-white")}>
-        <Navbar />
-        <main className="container max-w-full overflow-x-hidden py-6">
-          {children}
-        </main>
-        <Footer />
+        <SessionModeProvider>
+          <Navbar />
+          <DemoModeBanner />
+          <main className="max-w-full overflow-x-hidden">
+            {children}
+          </main>
+          <Footer />
+        </SessionModeProvider>
       </body>
     </html>
   );

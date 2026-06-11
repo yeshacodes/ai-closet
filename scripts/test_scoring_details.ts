@@ -1,4 +1,5 @@
-import { calculateScoringDetails } from "../src/lib/recommender";
+import { calculateScoringDetails, HybridRecommender, Preferences } from "../src/lib/recommender";
+import { Item } from "../src/types";
 
 function assert(condition: boolean, message: string) {
     if (!condition) {
@@ -48,5 +49,95 @@ const bounded = calculateScoringDetails({
 assert(bounded.finalScore === 100, "Final score should be clamped to 100.");
 assert(bounded.ruleScorePercent === 100, "Rule score percent should be clamped to 100.");
 assert(bounded.mlScorePercent === 100, "ML score percent should be clamped to 100.");
+
+const mockItems: Item[] = [
+    {
+        id: "top-1",
+        created_at: "",
+        name: "Black T-Shirt",
+        category: "T-Shirt",
+        color: "Black",
+        style: "Casual",
+        styles: ["Casual"],
+        weather: ["Warm"],
+        tags: ["tee"],
+        image_url: "",
+        description: ""
+    },
+    {
+        id: "bottom-1",
+        created_at: "",
+        name: "Blue Jeans",
+        category: "Jeans",
+        color: "Denim",
+        style: "Casual",
+        styles: ["Casual"],
+        weather: ["Warm"],
+        tags: ["denim"],
+        image_url: "",
+        description: ""
+    },
+    {
+        id: "shoe-1",
+        created_at: "",
+        name: "White Sneakers",
+        category: "Footwear",
+        color: "White",
+        style: "Casual",
+        styles: ["Casual"],
+        weather: ["Warm"],
+        tags: ["sneaker"],
+        image_url: "",
+        description: ""
+    }
+];
+
+const recommender = new HybridRecommender();
+const basePreferences: Preferences = { weather: "Warm", occasion: "Casual" };
+const baseOutfit = recommender.generateOutfit(mockItems, basePreferences).outfit;
+const wornOutfit = recommender.generateOutfit(mockItems, {
+    ...basePreferences,
+    wearHistory: {
+        recentFullOutfitIds: ["bottom-1|shoe-1|top-1"],
+        recentTopIds: ["top-1"],
+        recentBottomIds: ["bottom-1"],
+        recentFootwearIds: ["shoe-1"],
+        recentOuterwearIds: []
+    }
+}).outfit;
+
+assert(Boolean(baseOutfit && wornOutfit), "Wear history scoring check should generate outfits.");
+assert(closeTo(baseOutfit!.score, wornOutfit!.score), "Wear history should not change displayed outfit quality score.");
+assert(
+    (wornOutfit!.selectionDebug?.selectionScore || 0) < (wornOutfit!.selectionDebug?.qualityScore || 0),
+    "Wear history should affect selectionScore, not qualityScore."
+);
+
+const liveWarmOutfit = recommender.generateOutfit(mockItems, {
+    ...basePreferences,
+    weatherContext: {
+        temperatureF: 91,
+        temperatureC: 32.8,
+        weatherCode: 0,
+        mappedWeatherCategory: "Warm",
+        source: "live",
+        detectedAt: "2026-06-09T12:00:00.000Z"
+    }
+}).outfit;
+const manualWarmOutfit = recommender.generateOutfit(mockItems, basePreferences).outfit;
+
+assert(Boolean(liveWarmOutfit && manualWarmOutfit), "Live temperature scoring check should generate outfits.");
+assert(
+    (liveWarmOutfit!.selectionDebug?.temperaturePracticalityAdjustment || 0) !== 0,
+    "Live temperature should affect selectionScore."
+);
+assert(
+    closeTo(liveWarmOutfit!.selectionDebug!.qualityScore, manualWarmOutfit!.selectionDebug!.qualityScore),
+    "Practical warm-weather live temperature should not change displayed quality score."
+);
+assert(
+    (manualWarmOutfit!.selectionDebug?.temperaturePracticalityAdjustment || 0) === 0,
+    "Manual weather should disable live temperature adjustments."
+);
 
 console.log("Scoring details checks passed.");

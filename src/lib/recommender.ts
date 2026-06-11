@@ -30,6 +30,7 @@ type OutfitBase = {
     accessory?: Item;
     outerwearDebug?: OuterwearSelectionDebug;
     footwearDebug?: FootwearSelectionDebug;
+    selectionDebug?: SelectionDebug;
     score: number;
     ruleScore: number;
     mlScore?: number;
@@ -70,6 +71,25 @@ export type Preferences = {
     penalizedOuterwearIds?: string[];
     recentKeyItemIds?: string[];
     preferenceProfile?: PreferenceProfile;
+    wearHistory?: WearHistoryContext;
+    weatherContext?: WeatherContext;
+}
+
+export type WearHistoryContext = {
+    recentFullOutfitIds: string[];
+    recentTopIds: string[];
+    recentBottomIds: string[];
+    recentFootwearIds: string[];
+    recentOuterwearIds: string[];
+}
+
+export type WeatherContext = {
+    temperatureF: number;
+    temperatureC: number;
+    weatherCode?: number;
+    mappedWeatherCategory: WeatherType;
+    source: "live" | "manual";
+    detectedAt: string;
 }
 
 export type ScoringDetails = {
@@ -199,6 +219,18 @@ type FootwearSelectionDebug = {
     selectedFootwearId?: string;
     selectedFootwearName?: string;
     reasonSelected: string;
+}
+
+type SelectionDebug = {
+    qualityScore: number;
+    selectionScore: number;
+    generatedFootwearAdjustment: number;
+    wearHistoryAdjustment: number;
+    wearHistoryReasons: string[];
+    temperaturePracticalityAdjustment: number;
+    temperaturePracticalityReasons: string[];
+    affectedItemTypes: string[];
+    weatherContext?: WeatherContext;
 }
 
 const HISTORY_KEY = "aiCloset_outfit_history_v1";
@@ -424,10 +456,11 @@ export class HybridRecommender {
             ? repeatSafeFinalCandidates
             : allFinalScoredCandidates;
 
-        const selectionRankedCandidates = this.rankCandidatesForSelection(finalScoredCandidates, history);
+        const selectionRankedCandidates = this.rankCandidatesForSelection(finalScoredCandidates, history, preferences.wearHistory, preferences.weatherContext);
         const finalists = this.selectDiverseFinalists(selectionRankedCandidates, history, eligibleOuterCount)
-            .sort((a, b) => this.compareCandidatesForSelection(a, b, history));
+            .sort((a, b) => this.compareCandidatesForSelection(a, b, history, preferences.wearHistory, preferences.weatherContext));
         this.attachFootwearDebug(finalists, selectionRankedCandidates, preferences, history);
+        this.attachSelectionDebug(finalists, history, preferences.wearHistory, preferences.weatherContext);
 
         const selectedScore = finalists[0]?.scoringDetails?.finalScore ?? 0;
         console.log("[Recommendation Audit]", {
@@ -591,24 +624,95 @@ export class HybridRecommender {
         return outfit.scoringDetails?.finalScore ?? outfit.score * 100;
     }
 
+    private getGeneratedFootwearSelectionAdjustment(outfit: Outfit, history: OutfitHistory): number {
+        return this.getFootwearRotationPenalty(outfit.footwear, history);
+    }
+
     private getFootwearSelectionScore(outfit: Outfit, history: OutfitHistory): number {
         return this.getQualityScore(outfit) + this.getFootwearRotationPenalty(outfit.footwear, history);
     }
 
-    private compareCandidatesForSelection(a: Outfit, b: Outfit, history: OutfitHistory): number {
+    private getCandidateSelectionScore(
+        outfit: Outfit,
+        history: OutfitHistory,
+        wearHistory?: WearHistoryContext,
+        weatherContext?: WeatherContext
+    ): number {
+        return this.getQualityScore(outfit) +
+            this.getGeneratedFootwearSelectionAdjustment(outfit, history) +
+            this.getWearHistorySelectionAdjustment(outfit, wearHistory).adjustment +
+            this.getTemperaturePracticalityAdjustment(outfit, weatherContext).adjustment;
+    }
+
+    private compareCandidatesForSelection(
+        a: Outfit,
+        b: Outfit,
+        history: OutfitHistory,
+        wearHistory?: WearHistoryContext,
+        weatherContext?: WeatherContext
+    ): number {
         const qualityDifference = this.getQualityScore(b) - this.getQualityScore(a);
 
-        // Footwear rotation is only a close-candidate tiebreaker. It should not let
-        // a materially weaker outfit outrank a stronger recommendation.
+        // Rotation is only a close-candidate tiebreaker. It should not let a
+        // materially weaker outfit outrank a stronger recommendation, and it never
+        // changes the user-facing quality score.
         if (Math.abs(qualityDifference) > 5) {
             return qualityDifference;
         }
 
-        return this.getFootwearSelectionScore(b, history) - this.getFootwearSelectionScore(a, history);
+        return this.getCandidateSelectionScore(b, history, wearHistory, weatherContext) -
+            this.getCandidateSelectionScore(a, history, wearHistory, weatherContext);
     }
 
-    private rankCandidatesForSelection(candidates: Outfit[], history: OutfitHistory): Outfit[] {
-        return [...candidates].sort((a, b) => this.compareCandidatesForSelection(a, b, history));
+    private rankCandidatesForSelection(
+        candidates: Outfit[],
+        history: OutfitHistory,
+        wearHistory?: WearHistoryContext,
+        weatherContext?: WeatherContext
+    ): Outfit[] {
+        return [...candidates].sort((a, b) => this.compareCandidatesForSelection(a, b, history, wearHistory, weatherContext));
+    }
+
+    private attachSelectionDebug(
+        finalists: Outfit[],
+        history: OutfitHistory,
+        wearHistory?: WearHistoryContext,
+        weatherContext?: WeatherContext
+    ) {
+        for (const outfit of finalists) {
+            const wearSignal = this.getWearHistorySelectionAdjustment(outfit, wearHistory);
+            const temperatureSignal = this.getTemperaturePracticalityAdjustment(outfit, weatherContext);
+            const generatedFootwearAdjustment = this.getGeneratedFootwearSelectionAdjustment(outfit, history);
+            const qualityScore = this.getQualityScore(outfit);
+            const selectionScore = qualityScore + generatedFootwearAdjustment + wearSignal.adjustment + temperatureSignal.adjustment;
+
+            outfit.selectionDebug = {
+                qualityScore: Number(qualityScore.toFixed(1)),
+                selectionScore: Number(selectionScore.toFixed(1)),
+                generatedFootwearAdjustment,
+                wearHistoryAdjustment: wearSignal.adjustment,
+                wearHistoryReasons: wearSignal.reasons,
+                temperaturePracticalityAdjustment: temperatureSignal.adjustment,
+                temperaturePracticalityReasons: temperatureSignal.reasons,
+                affectedItemTypes: temperatureSignal.affectedItemTypes,
+                weatherContext
+            };
+        }
+
+        if (finalists[0]?.selectionDebug) {
+            console.log("[Wear History Selection]", {
+                selectedOutfit: this.getFullId(finalists[0]),
+                qualityScore: finalists[0].selectionDebug.qualityScore,
+                selectionScore: finalists[0].selectionDebug.selectionScore,
+                generatedFootwearAdjustment: finalists[0].selectionDebug.generatedFootwearAdjustment,
+                wearHistoryAdjustment: finalists[0].selectionDebug.wearHistoryAdjustment,
+                wearHistoryReasons: finalists[0].selectionDebug.wearHistoryReasons,
+                temperaturePracticalityAdjustment: finalists[0].selectionDebug.temperaturePracticalityAdjustment,
+                temperaturePracticalityReasons: finalists[0].selectionDebug.temperaturePracticalityReasons,
+                affectedItemTypes: finalists[0].selectionDebug.affectedItemTypes,
+                weatherContext: finalists[0].selectionDebug.weatherContext
+            });
+        }
     }
 
     private attachFootwearDebug(
@@ -682,6 +786,272 @@ export class HybridRecommender {
         const outer = o.outerwear ? `-${o.outerwear.id}` : '-none';
         const shoes = o.footwear ? `-${o.footwear.id}` : '-none';
         return base + outer + shoes;
+    }
+
+    private getWearCombinationId(outfit: Outfit): string {
+        return this.getOutfitItems(outfit)
+            .map(item => item.id)
+            .sort()
+            .join("|");
+    }
+
+    private getWearHistorySelectionAdjustment(
+        outfit: Outfit,
+        wearHistory?: WearHistoryContext
+    ): { adjustment: number; reasons: string[] } {
+        if (!wearHistory) return { adjustment: 0, reasons: ["No worn outfit history available yet."] };
+
+        let adjustment = 0;
+        const reasons: string[] = [];
+        const fullId = this.getWearCombinationId(outfit);
+        const keyId = this.getKeyItemId(outfit);
+
+        const fullPenalty = this.getRecentWearPenalty(wearHistory.recentFullOutfitIds, fullId, [-8, -6, -4, -2]);
+        if (fullPenalty !== 0) {
+            adjustment += fullPenalty;
+            reasons.push(`Full outfit was worn recently (${fullPenalty}).`);
+        }
+
+        const keyPenalty = this.getRecentWearPenalty(wearHistory.recentTopIds, keyId, [-3, -2, -1]);
+        if (keyPenalty !== 0) {
+            adjustment += keyPenalty;
+            reasons.push(`Key item was worn recently (${keyPenalty}).`);
+        }
+
+        if (outfit.type === "separates") {
+            const bottomPenalty = this.getRecentWearPenalty(wearHistory.recentBottomIds, outfit.bottom.id, [-3, -2, -1]);
+            if (bottomPenalty !== 0) {
+                adjustment += bottomPenalty;
+                reasons.push(`Bottom was worn recently (${bottomPenalty}).`);
+            }
+        }
+
+        const footwearPenalty = this.getRecentWearPenalty(wearHistory.recentFootwearIds, outfit.footwear.id, [-4, -3, -2, -1]);
+        if (footwearPenalty !== 0) {
+            adjustment += footwearPenalty;
+            reasons.push(`Footwear was worn recently (${footwearPenalty}).`);
+        }
+
+        if (outfit.outerwear) {
+            const outerwearPenalty = this.getRecentWearPenalty(wearHistory.recentOuterwearIds, outfit.outerwear.id, [-2, -1]);
+            if (outerwearPenalty !== 0) {
+                adjustment += outerwearPenalty;
+                reasons.push(`Outerwear was worn recently (${outerwearPenalty}).`);
+            }
+        }
+
+        return {
+            adjustment,
+            reasons: reasons.length > 0
+                ? reasons
+                : ["This outfit introduces wardrobe variety from worn history."]
+        };
+    }
+
+    private getRecentWearPenalty(recentIds: string[] | undefined, itemId: string, penalties: number[]): number {
+        const recentIndex = (recentIds || []).indexOf(itemId);
+        if (recentIndex === -1) return 0;
+        return penalties[Math.min(recentIndex, penalties.length - 1)] || 0;
+    }
+
+    private getTemperaturePracticalityAdjustment(
+        outfit: Outfit,
+        weatherContext?: WeatherContext
+    ): { adjustment: number; reasons: string[]; affectedItemTypes: string[] } {
+        if (!weatherContext || weatherContext.source !== "live") {
+            return {
+                adjustment: 0,
+                reasons: ["Manual weather override is active, so live temperature is not used."],
+                affectedItemTypes: []
+            };
+        }
+
+        const temp = weatherContext.temperatureF;
+        const items = this.getOutfitItems(outfit);
+        const affectedItemTypes = new Set<string>();
+        const reasons: string[] = [];
+        let adjustment = 0;
+
+        const hasOuterwear = Boolean(outfit.outerwear);
+        const hasWarmLayer = items.some(item => this.isWarmLayer(item));
+        const hasLightweight = items.some(item => this.isLightweightItem(item));
+        const hasShortOrSkirt = outfit.type === "separates" && this.isShortsOrSkirts(outfit.bottom);
+        const hasFullLengthBottom = outfit.type === "dress" || (outfit.type === "separates" && !this.isShortsOrSkirts(outfit.bottom));
+        const hasOpenFootwear = this.isOpenFootwear(outfit.footwear);
+        const hasRainSupport = (outfit.outerwear && this.isRainGear(outfit.outerwear)) || this.isRainGear(outfit.footwear);
+        const hasRainSensitiveFootwear = this.isRainSensitiveFootwear(outfit.footwear);
+
+        if (temp >= 95) {
+            if (hasOuterwear) {
+                adjustment -= 6;
+                affectedItemTypes.add("outerwear");
+                reasons.push(`Live weather is ${Math.round(temp)}°F, so heavy layers are strongly deprioritized.`);
+            }
+            if (hasWarmLayer) {
+                adjustment -= 4;
+                affectedItemTypes.add("warm layers");
+                reasons.push(`Live weather is ${Math.round(temp)}°F, so hoodies, sweaters, and heavy knits are less practical.`);
+            }
+            if (hasLightweight || hasShortOrSkirt || outfit.type === "dress") {
+                adjustment += 4;
+                affectedItemTypes.add("lightweight pieces");
+                reasons.push(`Live weather is ${Math.round(temp)}°F, so lightweight pieces are prioritized.`);
+            }
+        } else if (temp >= 85) {
+            if (hasOuterwear) {
+                adjustment -= 4;
+                affectedItemTypes.add("outerwear");
+                reasons.push(`Live weather is ${Math.round(temp)}°F, so outerwear is deprioritized.`);
+            }
+            if (hasWarmLayer) {
+                adjustment -= 3;
+                affectedItemTypes.add("warm layers");
+                reasons.push(`Live weather is ${Math.round(temp)}°F, so warm layers are less practical.`);
+            }
+            if (hasLightweight || hasShortOrSkirt || outfit.type === "dress") {
+                adjustment += 3;
+                affectedItemTypes.add("lightweight pieces");
+                reasons.push(`Live weather is ${Math.round(temp)}°F, so lightweight tops, dresses, skirts, and shorts are prioritized.`);
+            }
+        } else if (temp >= 75) {
+            if (hasOuterwear) {
+                adjustment -= 2;
+                affectedItemTypes.add("outerwear");
+                reasons.push(`Live weather is ${Math.round(temp)}°F, so heavy outerwear is slightly deprioritized.`);
+            }
+            if (hasLightweight || hasShortOrSkirt || outfit.type === "dress") {
+                adjustment += 2;
+                affectedItemTypes.add("lightweight pieces");
+                reasons.push(`Live weather is ${Math.round(temp)}°F, so lighter pieces get a small preference.`);
+            }
+        } else if (temp >= 60) {
+            reasons.push(`Live weather is ${Math.round(temp)}°F, so no major temperature adjustment was needed.`);
+        } else if (temp >= 45) {
+            if (hasOuterwear || hasWarmLayer) {
+                adjustment += 2;
+                affectedItemTypes.add("warmer layers");
+                reasons.push(`Live weather is ${Math.round(temp)}°F, so warmer layers get a small preference.`);
+            }
+            if (!hasOuterwear && hasLightweight) {
+                adjustment -= 2;
+                affectedItemTypes.add("lightweight pieces");
+                reasons.push(`Live weather is ${Math.round(temp)}°F, so lightweight-only outfits are slightly deprioritized.`);
+            }
+        } else {
+            if (hasOuterwear || hasWarmLayer) {
+                adjustment += 4;
+                affectedItemTypes.add("warmer layers");
+                reasons.push(`Live weather is ${Math.round(temp)}°F, so warm layers are prioritized.`);
+            }
+            if (hasFullLengthBottom) {
+                adjustment += 2;
+                affectedItemTypes.add("full-length bottoms");
+                reasons.push(`Live weather is ${Math.round(temp)}°F, so full-length coverage is preferred.`);
+            }
+            if (hasShortOrSkirt || (!hasOuterwear && hasLightweight)) {
+                adjustment -= 4;
+                affectedItemTypes.add("lightweight pieces");
+                reasons.push(`Live weather is ${Math.round(temp)}°F, so shorts or lightweight-only pieces are less practical.`);
+            }
+            if (hasOpenFootwear) {
+                adjustment -= 4;
+                affectedItemTypes.add("open footwear");
+                reasons.push(`Live weather is ${Math.round(temp)}°F, so sandals or open footwear are deprioritized.`);
+            }
+        }
+
+        if (temp < 32 || weatherContext.mappedWeatherCategory === "Snowy") {
+            if (hasOuterwear || hasWarmLayer) {
+                adjustment += 3;
+                affectedItemTypes.add("warm outerwear");
+                reasons.push("Freezing or snowy weather prioritizes warm outerwear.");
+            }
+            if (hasOpenFootwear || hasLightweight) {
+                adjustment -= 5;
+                affectedItemTypes.add("lightweight/open items");
+                reasons.push("Freezing or snowy weather deprioritizes sandals and lightweight outfits.");
+            }
+        }
+
+        if (weatherContext.mappedWeatherCategory === "Rainy") {
+            if (hasRainSupport) {
+                adjustment += 3;
+                affectedItemTypes.add("rain support");
+                reasons.push("Rainy live weather prioritizes rain-friendly footwear or outerwear.");
+            }
+            if (hasOpenFootwear || hasRainSensitiveFootwear) {
+                adjustment -= 3;
+                affectedItemTypes.add("rain-sensitive footwear");
+                reasons.push("Rainy live weather deprioritizes open or rain-sensitive footwear.");
+            }
+        }
+
+        const boundedAdjustment = Math.max(-8, Math.min(8, adjustment));
+
+        return {
+            adjustment: boundedAdjustment,
+            reasons: reasons.length > 0
+                ? reasons
+                : [`Live weather is ${Math.round(temp)}°F, so the outfit is treated as temperature-neutral.`],
+            affectedItemTypes: Array.from(affectedItemTypes)
+        };
+    }
+
+    private getTemperatureQualityAdjustment(outfit: Outfit, weatherContext?: WeatherContext): number {
+        if (!weatherContext || weatherContext.source !== "live") return 0;
+
+        const temp = weatherContext.temperatureF;
+        const items = this.getOutfitItems(outfit);
+        const hasOuterwear = Boolean(outfit.outerwear);
+        const hasWarmLayer = items.some(item => this.isWarmLayer(item));
+        const hasLightweight = items.some(item => this.isLightweightItem(item));
+        const hasOpenFootwear = this.isOpenFootwear(outfit.footwear);
+        const hasShortOrSkirt = outfit.type === "separates" && this.isShortsOrSkirts(outfit.bottom);
+        const hasRainSensitiveFootwear = this.isRainSensitiveFootwear(outfit.footwear);
+
+        let adjustment = 0;
+
+        if (temp >= 95 && (hasOuterwear || hasWarmLayer)) {
+            adjustment -= 3;
+        }
+
+        if (temp < 45 && !hasOuterwear && hasLightweight) {
+            adjustment -= 3;
+        }
+
+        if ((temp < 32 || weatherContext.mappedWeatherCategory === "Snowy") && (hasOpenFootwear || hasShortOrSkirt)) {
+            adjustment -= 4;
+        }
+
+        if (weatherContext.mappedWeatherCategory === "Rainy" && (hasOpenFootwear || hasRainSensitiveFootwear)) {
+            adjustment -= 2;
+        }
+
+        return Math.max(-4, Math.min(0, adjustment));
+    }
+
+    private isWarmLayer(item: Item): boolean {
+        const text = this.getItemSearchText(item);
+        return ["hoodie", "sweater", "sweatshirt", "jacket", "coat", "parka", "fleece", "wool", "knit", "outerwear"].some(keyword => text.includes(keyword));
+    }
+
+    private isLightweightItem(item: Item): boolean {
+        const text = this.getItemSearchText(item);
+        return ["t-shirt", "tee", "tank", "sleeveless", "camisole", "cami", "shorts", "skirt", "dress", "linen", "lightweight", "lace"].some(keyword => text.includes(keyword));
+    }
+
+    private isOpenFootwear(item: Item): boolean {
+        const text = this.getItemSearchText(item);
+        return ["sandal", "slides", "flip flop", "open toe", "open-toe"].some(keyword => text.includes(keyword));
+    }
+
+    private isRainSensitiveFootwear(item: Item): boolean {
+        const text = this.getItemSearchText(item);
+        return ["suede", "canvas", "open toe", "open-toe"].some(keyword => text.includes(keyword));
+    }
+
+    private getItemSearchText(item: Item): string {
+        return `${item.name || ""} ${item.category || ""} ${(item.tags || []).join(" ")} ${(item.styles || []).join(" ")} ${item.description || ""}`.toLowerCase();
     }
 
     private getOuterwearRotationPenalty(outerwear: Item | undefined, history: OutfitHistory): number {
@@ -1429,6 +1799,7 @@ export class HybridRecommender {
                     coldPenaltyAppliedCount++;
                 }
             }
+            weatherPenalty += this.getTemperatureQualityAdjustment(outfit, preferences.weatherContext);
 
             const randomAdjustment = 0;
             const scoringDetails = this.createScoringDetails(
@@ -1515,6 +1886,7 @@ export class HybridRecommender {
         if (preferences.weather === "Cold" && outfit.type === "separates" && this.isShortsOrSkirts(outfit.bottom) && nonShortBottomsCount >= 3) {
             weatherPenalty = -5;
         }
+        weatherPenalty += this.getTemperatureQualityAdjustment(outfit, preferences.weatherContext);
 
         const scoringDetails = this.createScoringDetails(
             ruleScore,
