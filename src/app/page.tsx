@@ -55,7 +55,9 @@ export default function Home() {
             alt="Fashion wardrobe"
             className="w-full h-full object-cover"
           />
-          <div className="absolute inset-0 bg-background/70 dark:bg-background/85" />
+          <div className="absolute inset-0 bg-black/25" />
+          <div className="absolute inset-0 bg-gradient-to-r from-black/72 via-black/34 to-transparent" />
+          <div className="absolute inset-0 bg-gradient-to-t from-background/35 via-transparent to-transparent" />
           {/* Subtle grain texture */}
           <div
             className="absolute inset-0 opacity-30"

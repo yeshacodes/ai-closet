@@ -30,6 +30,8 @@ const BROAD_CATEGORY_OPTIONS = [
     { label: "Accessory", categories: ["Accessory"] }
 ]
 
+const DEMO_ITEM_MANAGEMENT_MESSAGE = "Demo Mode: Item management is disabled in the demo closet. Create your own closet to add, edit, and remove items."
+
 type EditForm = {
     name: string;
     category: string;
@@ -89,11 +91,11 @@ export default function WardrobePage() {
     }
 
     const deleteItem = async (id: string, imageUrl: string) => {
-        if (!confirm("Are you sure you want to delete this item?")) return
         if (scope.isDemo) {
-            alert("Demo mode is read-only. Sign in to save your own changes.")
+            alert(DEMO_ITEM_MANAGEMENT_MESSAGE)
             return
         }
+        if (!confirm("Are you sure you want to delete this item?")) return
 
         try {
             // 1. Delete from Storage
@@ -133,7 +135,7 @@ export default function WardrobePage() {
 
     const openEditModal = (item: Item) => {
         if (scope.isDemo) {
-            alert("Demo mode is read-only. Sign in to save your own changes.")
+            alert(DEMO_ITEM_MANAGEMENT_MESSAGE)
             return
         }
         setEditingItem(item)
@@ -185,6 +187,10 @@ export default function WardrobePage() {
 
     const saveEdit = async () => {
         if (!editingItem || !editForm) return
+        if (scope.isDemo) {
+            setEditError(DEMO_ITEM_MANAGEMENT_MESSAGE)
+            return
+        }
 
         const name = editForm.name.trim()
         const category = editForm.category.trim()

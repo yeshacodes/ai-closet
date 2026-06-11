@@ -34,7 +34,7 @@ export function Navbar() {
 
     return (
         <nav className="sticky top-0 z-50 w-full border-b border-white/10 bg-black/75 text-white backdrop-blur-xl supports-[backdrop-filter]:bg-black/65">
-            <div className="fashion-container flex h-16 items-center justify-between">
+            <div className="flex h-16 w-full items-center justify-between px-6 md:px-10">
                 <Link href="/" className="flex items-center gap-3 text-xl font-semibold tracking-tight">
                     <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-primary/35 bg-primary/15 text-primary shadow-[0_0_30px_rgba(214,161,95,0.18)]">
                         <Shirt className="h-5 w-5" />

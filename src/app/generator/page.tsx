@@ -27,6 +27,7 @@ import { EmptyState, PageShell } from "@/components/ui/page-shell"
 
 const weathers = ["Sunny", "Rainy", "Cold", "Warm", "Snowy"]
 const occasions = ["Casual", "Smart Casual", "Formal", "Party / Dressy", "Sporty / Athleisure", "Streetwear"]
+const WEATHER_DETECTION_ERROR = "Unable to detect weather. Please choose manually."
 
 export default function GeneratorPage() {
     const scope = useSessionMode()
@@ -63,7 +64,10 @@ export default function GeneratorPage() {
         }
         : undefined
     const whyThisOutfit = outfit
-        ? buildWhyThisOutfit(outfit, preferences, preferenceProfile, dislikedItemIds, activeWeatherContext)
+        ? buildWhyThisOutfit(outfit, preferences, preferenceProfile, dislikedItemIds, activeWeatherContext, scope.isDemo)
+        : []
+    const personalizationReasons = outfit && !scope.isDemo
+        ? buildPersonalizationReasons(outfit, preferenceProfile, dislikedItemIds)
         : []
 
     const recommender = new HybridRecommender()
@@ -80,7 +84,7 @@ export default function GeneratorPage() {
             setItems(wardrobeItems)
             await fetchFeedbackProfile(wardrobeItems)
             await refreshWearHistory()
-        } catch (error) {
+        } catch (error: unknown) {
             console.error('Error fetching items:', error)
         } finally {
             setLoading(false)
@@ -317,17 +321,29 @@ export default function GeneratorPage() {
             setWeatherMessageType("loading")
 
             const currentWeather = await fetchCurrentWeather()
+            if (!weathers.includes(currentWeather.category)) {
+                throw new Error("Live weather mapped to an unsupported category. Please choose weather manually.")
+            }
+
+            console.info("Live weather applied to generator", {
+                previousWeather: preferences.weather,
+                detectedWeather: currentWeather.category,
+                temperatureF: currentWeather.temperatureF,
+                weatherCode: currentWeather.weatherCode,
+                rainChanceNext3Hours: currentWeather.rainChanceNext3Hours
+            })
             setLiveWeather(currentWeather)
             setPreferences(prev => ({
                 ...prev,
                 weather: currentWeather.category
             }))
-            setWeatherMessage(`${Math.round(currentWeather.temperatureF)}°F • ${currentWeather.mappedWeatherCategory} • Live weather`)
+            setWeatherMessage(`${Math.round(currentWeather.temperatureF)} degrees F - ${currentWeather.mappedWeatherCategory} - Live weather`)
             setWeatherMessageType("success")
-        } catch (error) {
+        } catch (error: unknown) {
             console.error("Unable to detect weather:", error)
+            const errorInfo = error as { message?: string }
             setLiveWeather(null)
-            setWeatherMessage("Unable to detect weather. Please choose manually.")
+            setWeatherMessage(errorInfo.message || WEATHER_DETECTION_ERROR)
             setWeatherMessageType("error")
         } finally {
             setDetectingWeather(false)
@@ -348,11 +364,12 @@ export default function GeneratorPage() {
             {/* Controls */}
             <Card className="bg-white/[0.035]">
                 <CardContent className="p-6">
-                    <div className="grid grid-cols-1 items-end gap-4 md:grid-cols-[1fr_1fr_auto]">
+                    <div className="grid grid-cols-1 items-end gap-4 lg:grid-cols-[1fr_auto_1fr_auto]">
                         <div className="space-y-2">
                             <label className="text-sm font-medium">Weather</label>
                             <Select
                                 value={preferences.weather}
+                                className="h-11"
                                 onChange={e => {
                                     setPreferences({ ...preferences, weather: e.target.value })
                                     if (liveWeather && e.target.value !== liveWeather.category) {
@@ -364,59 +381,24 @@ export default function GeneratorPage() {
                             >
                                 {weathers.map(w => <option key={w} value={w}>{w}</option>)}
                             </Select>
-                            <div className="space-y-2">
-                                <Button
-                                    type="button"
-                                    variant="outline"
-                                    size="sm"
-                                    className="w-full justify-start border-white/10 bg-background/70 text-xs"
-                                    onClick={handleUseCurrentWeather}
-                                    disabled={detectingWeather}
-                                >
-                                    <span className="mr-2">🌤</span>
-                                    {detectingWeather ? "Detecting weather..." : "Use Current Weather"}
-                                </Button>
-                                {weatherMessage && (
-                                    <div className="space-y-1">
-                                        <div className={`inline-flex max-w-full items-center rounded-full border px-3 py-1 text-xs ${weatherMessageType === "error"
-                                            ? "border-destructive/30 bg-destructive/10 text-destructive"
-                                            : weatherMessageType === "loading"
-                                                ? "border-white/10 bg-secondary/40 text-muted-foreground"
-                                                : "border-white/10 bg-secondary/50 text-muted-foreground"
-                                            }`}>
-                                            {weatherMessageType === "success" && liveWeather && (
-                                                <span className="mr-1.5">{getWeatherBadgeIcon(liveWeather.category)}</span>
-                                            )}
-                                            <span className="truncate">{weatherMessage}</span>
-                                            {weatherMessageType === "success" && (
-                                                <button
-                                                    type="button"
-                                                    className="ml-2 border-l border-white/10 pl-2 text-foreground/80 hover:text-foreground"
-                                                    onClick={handleUseCurrentWeather}
-                                                    disabled={detectingWeather}
-                                                >
-                                                    Refresh
-                                                </button>
-                                            )}
-                                        </div>
-                                        {weatherMessageType === "success" && liveWeather?.forecastOverrideApplied && (
-                                            <p className="text-[11px] text-muted-foreground">
-                                                Rain expected within the next few hours
-                                            </p>
-                                        )}
-                                        {weatherMessageType === "success" && !liveWeather?.forecastOverrideApplied && liveWeather?.rainChanceNext3Hours !== undefined && (
-                                            <p className="text-[11px] text-muted-foreground">
-                                                Rain chance next 3h: {Math.round(liveWeather.rainChanceNext3Hours)}%
-                                            </p>
-                                        )}
-                                    </div>
-                                )}
-                            </div>
+                        </div>
+                        <div className="space-y-2">
+                            <span className="hidden text-sm font-medium text-transparent lg:block">Live Weather</span>
+                            <Button
+                                type="button"
+                                variant="outline"
+                                className="h-11 w-full justify-center border-white/10 bg-background/70 px-4 text-sm lg:w-auto"
+                                onClick={handleUseCurrentWeather}
+                                disabled={detectingWeather}
+                            >
+                                {detectingWeather ? "Detecting..." : "Use Current Weather"}
+                            </Button>
                         </div>
                         <div className="space-y-2">
                             <label className="text-sm font-medium">Occasion / Style</label>
                             <Select
                                 value={preferences.occasion}
+                                className="h-11"
                                 onChange={e => setPreferences({ ...preferences, occasion: e.target.value })}
                             >
                                 {occasions.map(o => <option key={o} value={o}>{o}</option>)}
@@ -426,12 +408,47 @@ export default function GeneratorPage() {
                             size="lg"
                             onClick={generateOutfit}
                             disabled={loading || generating}
-                            className="w-full md:w-auto"
+                            className="h-11 w-full lg:w-auto"
                         >
                             {generating ? <Loader className="mr-2" /> : <Sparkles className="mr-2 h-4 w-4" />}
                             Generate Outfit
                         </Button>
                     </div>
+                    {weatherMessage && (
+                        <div className="mt-4 space-y-1">
+                            <div className={`inline-flex max-w-full items-center rounded-full border px-3 py-1 text-xs ${weatherMessageType === "error"
+                                ? "border-destructive/30 bg-destructive/10 text-destructive"
+                                : weatherMessageType === "loading"
+                                    ? "border-white/10 bg-secondary/40 text-muted-foreground"
+                                    : "border-white/10 bg-secondary/50 text-muted-foreground"
+                                }`}>
+                                {weatherMessageType === "success" && liveWeather && (
+                                    <span className="mr-1.5">{getWeatherBadgeIcon(liveWeather.category)}</span>
+                                )}
+                                <span className="truncate">{weatherMessage}</span>
+                                {weatherMessageType === "success" && (
+                                    <button
+                                        type="button"
+                                        className="ml-2 border-l border-white/10 pl-2 text-foreground/80 hover:text-foreground"
+                                        onClick={handleUseCurrentWeather}
+                                        disabled={detectingWeather}
+                                    >
+                                        Refresh
+                                    </button>
+                                )}
+                            </div>
+                            {weatherMessageType === "success" && liveWeather?.forecastOverrideApplied && (
+                                <p className="text-[11px] text-muted-foreground">
+                                    Rain expected within the next few hours
+                                </p>
+                            )}
+                            {weatherMessageType === "success" && !liveWeather?.forecastOverrideApplied && liveWeather?.rainChanceNext3Hours !== undefined && (
+                                <p className="text-[11px] text-muted-foreground">
+                                    Rain chance next 3h: {Math.round(liveWeather.rainChanceNext3Hours)}%
+                                </p>
+                            )}
+                        </div>
+                    )}
                 </CardContent>
             </Card>
 
@@ -472,20 +489,37 @@ export default function GeneratorPage() {
                             )}
                         </div>
 
-                        {/* Feedback Section */}
+                        {/* User-facing explanation section */}
                         <div className="flex flex-col items-center gap-4 rounded-lg border border-white/10 bg-white/[0.035] p-6">
-                            <p className="font-medium">How do you like this outfit?</p>
-                            <div className="flex gap-4 text-xs text-muted-foreground">
-                                <span>Final Score: {(outfit.score * 100).toFixed(1)}%</span>
-                                <span>•</span>
-                                <span>Rule Score: {outfit.ruleScore}/17</span>
-                                {outfit.mlScore && (
-                                    <>
-                                        <span>•</span>
-                                        <span>ML Score: {(outfit.mlScore * 100).toFixed(1)}%</span>
-                                    </>
-                                )}
+                            <div className="w-full max-w-2xl rounded-lg border border-white/10 bg-background/70 p-5 text-sm shadow-[0_18px_60px_rgba(0,0,0,0.18)]">
+                                <div className="flex items-center gap-2">
+                                    <Sparkles className="h-4 w-4 text-primary" />
+                                    <p className="font-medium text-foreground">Why this outfit?</p>
+                                </div>
+                                <ul className="mt-4 space-y-2 text-sm leading-relaxed text-muted-foreground">
+                                    {whyThisOutfit.map(reason => (
+                                        <li key={reason} className="flex gap-2">
+                                            <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
+                                            <span>{reason}</span>
+                                        </li>
+                                    ))}
+                                </ul>
                             </div>
+
+                            {personalizationReasons.length > 0 && (
+                                <div className="w-full max-w-2xl rounded-lg border border-white/10 bg-background/60 p-5 text-sm shadow-[0_18px_60px_rgba(0,0,0,0.16)]">
+                                    <p className="font-medium text-foreground">Personalized for You</p>
+                                    <ul className="mt-4 space-y-2 text-sm leading-relaxed text-muted-foreground">
+                                        {personalizationReasons.map(reason => (
+                                            <li key={reason} className="flex gap-2">
+                                                <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
+                                                <span>{reason}</span>
+                                            </li>
+                                        ))}
+                                    </ul>
+                                </div>
+                            )}
+
                             <div className="flex flex-col items-center gap-2">
                                 <Button
                                     variant="secondary"
@@ -501,95 +535,16 @@ export default function GeneratorPage() {
                                 )}
                             </div>
 
-                            <div className="w-full max-w-2xl rounded-lg border border-white/10 bg-background/70 p-4 text-sm">
-                                <div className="flex items-center gap-2">
-                                    <Sparkles className="h-4 w-4 text-muted-foreground" />
-                                    <p className="font-medium">Why this outfit?</p>
-                                </div>
-                                <ul className="mt-3 space-y-2 text-xs leading-relaxed text-muted-foreground">
-                                    {whyThisOutfit.map(reason => (
-                                        <li key={reason} className="flex gap-2">
-                                            <span className="text-foreground">-</span>
-                                            <span>{reason}</span>
-                                        </li>
-                                    ))}
-                                </ul>
-                            </div>
-
-                            {outfit.scoringDetails && (
-                                <div className="w-full max-w-2xl rounded-lg border border-white/10 bg-background/60 p-4 text-sm">
-                                    <p className="font-medium">Score Breakdown</p>
-                                    <p className="mt-1 text-xs text-muted-foreground">
-                                        Scores are recommendation confidence indicators, not absolute fashion ratings.
-                                    </p>
-                                    <div className="mt-3 grid grid-cols-1 gap-2 text-xs text-muted-foreground sm:grid-cols-2">
-                                        <span>Rule Score: {outfit.scoringDetails.ruleScorePercent.toFixed(1)}%</span>
-                                        <span>Heuristic Match Confidence: {outfit.scoringDetails.mlScorePercent.toFixed(1)}%</span>
-                                        <span>Base Before Preferences: {outfit.scoringDetails.baseScoreBeforePreferences.toFixed(1)}%</span>
-                                        <span>Preference Adjustment: {outfit.scoringDetails.preferenceAdjustment >= 0 ? "+" : ""}{outfit.scoringDetails.preferenceAdjustment.toFixed(1)}</span>
-                                    </div>
-                                    <div className="mt-3 space-y-1 text-xs text-muted-foreground">
-                                        {outfit.scoringDetails.preferenceReasons.map(reason => (
-                                            <p key={reason}>{reason}</p>
-                                        ))}
-                                    </div>
-                                    {outfit.selectionDebug?.weatherContext && (
-                                        <div className="mt-4 space-y-2 border-t border-white/10 pt-3 text-xs text-muted-foreground">
-                                            <p className="font-medium text-foreground">Live Weather Practicality</p>
-                                            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                                                <span>Detected Temperature: {Math.round(outfit.selectionDebug.weatherContext.temperatureF)}°F</span>
-                                                <span>Mapped Weather: {outfit.selectionDebug.weatherContext.mappedWeatherCategory}</span>
-                                                <span>Temperature Adjustment: {outfit.selectionDebug.temperaturePracticalityAdjustment >= 0 ? "+" : ""}{outfit.selectionDebug.temperaturePracticalityAdjustment.toFixed(1)}</span>
-                                                <span>Affected Items: {outfit.selectionDebug.affectedItemTypes.length > 0 ? outfit.selectionDebug.affectedItemTypes.join(", ") : "None"}</span>
-                                            </div>
-                                            {outfit.selectionDebug.temperaturePracticalityReasons.map(reason => (
-                                                <p key={reason}>{reason}</p>
-                                            ))}
-                                        </div>
-                                    )}
-                                    {outfit.scoringDetails.heuristicContributions && outfit.scoringDetails.heuristicContributions.length > 0 && (
-                                        <div className="mt-4 space-y-2 border-t border-white/10 pt-3 text-xs text-muted-foreground">
-                                            <p className="font-medium text-foreground">Heuristic Components</p>
-                                            {outfit.scoringDetails.heuristicContributions.map(component => (
-                                                <div key={component.component} className="grid grid-cols-[1fr_auto] gap-3">
-                                                    <span>{component.component}: {component.explanation}</span>
-                                                    <span>{component.contribution >= 0 ? "+" : ""}{component.contribution.toFixed(1)}</span>
-                                                </div>
-                                            ))}
-                                        </div>
-                                    )}
-                                </div>
-                            )}
-                            {outfit.ruleEvaluation && (
-                                <div className="w-full max-w-2xl rounded-lg border border-white/10 bg-background/60 p-4 text-sm">
-                                    <p className="font-medium">Rule Evaluation</p>
-                                    <p className="mt-1 text-xs text-muted-foreground">
-                                        Points Awarded: {outfit.ruleEvaluation.pointsAwarded} / {outfit.ruleEvaluation.pointsPossible}
-                                    </p>
-                                    <div className="mt-3 grid grid-cols-1 gap-4 text-xs text-muted-foreground md:grid-cols-2">
-                                        <div>
-                                            <p className="font-medium text-foreground">Passed Rules</p>
-                                            {outfit.ruleEvaluation.passedRules.map(rule => (
-                                                <p key={rule.name}>+{rule.points} {rule.name}: {rule.explanation}</p>
-                                            ))}
-                                        </div>
-                                        <div>
-                                            <p className="font-medium text-foreground">Failed Rules</p>
-                                            {outfit.ruleEvaluation.failedRules.length > 0 ? outfit.ruleEvaluation.failedRules.map(rule => (
-                                                <p key={rule.name}>-{rule.pointsLost} {rule.name}: {rule.explanation}</p>
-                                            )) : <p>No failed scoring rules.</p>}
-                                        </div>
-                                    </div>
-                                </div>
+                            {!scope.isDemo && (
+                                <p className="font-medium">How do you like this outfit?</p>
                             )}
 
-                            {!feedbackGiven ? (
+                            {!scope.isDemo && !feedbackGiven ? (
                                 <div className="flex gap-4">
                                     <Button
                                         variant="outline"
                                         className="gap-2 hover:bg-green-100 hover:text-green-700 hover:border-green-200"
                                         onClick={() => handleFeedback(true)}
-                                        disabled={scope.isDemo}
                                     >
                                         <ThumbsUp className="h-4 w-4" /> Like
                                     </Button>
@@ -597,12 +552,11 @@ export default function GeneratorPage() {
                                         variant="outline"
                                         className="gap-2 hover:bg-red-100 hover:text-red-700 hover:border-red-200"
                                         onClick={() => handleFeedback(false)}
-                                        disabled={scope.isDemo}
                                     >
                                         <ThumbsDown className="h-4 w-4" /> Dislike
                                     </Button>
                                 </div>
-                            ) : (
+                            ) : !scope.isDemo && (
                                 <motion.div
                                     initial={{ opacity: 0, scale: 0.8 }}
                                     animate={{ opacity: 1, scale: 1 }}
@@ -628,16 +582,26 @@ export default function GeneratorPage() {
 function buildWhyThisOutfit(
     outfit: Outfit,
     preferences: { weather: string; occasion: string },
-    profile: PreferenceProfile | undefined,
-    dislikedItemIds: Set<string>,
-    weatherContext?: WeatherContext
+    _profile: PreferenceProfile | undefined,
+    _dislikedItemIds: Set<string>,
+    weatherContext?: WeatherContext,
+    isDemo = false
 ) {
+    if (isDemo) {
+        return [
+            "Selected for the current weather.",
+            "Matches the chosen occasion.",
+            "Uses a balanced color combination.",
+            "Demonstrates how AI Closet creates recommendations."
+        ]
+    }
+
     const items = getOutfitItems(outfit)
     const bullets: string[] = []
 
     const matchingStyleCount = items.filter(item => itemMatchesStyle(item, preferences.occasion)).length
     if (matchingStyleCount > 0) {
-        bullets.push(`Matches your selected ${preferences.occasion} style across the main outfit pieces.`)
+        bullets.push(`Matches your chosen ${preferences.occasion} style.`)
     }
 
     const weatherReason = getWeatherReason(outfit, preferences.weather)
@@ -649,36 +613,17 @@ function buildWhyThisOutfit(
     const colorReason = getColorReason(items)
     if (colorReason) bullets.push(colorReason)
 
-    const preferenceReason = getPreferenceReason(items, profile)
-    if (preferenceReason) bullets.push(preferenceReason)
-
-    const outfitIds = new Set(items.map(item => item.id))
-    const avoidsDislikedItems = dislikedItemIds.size > 0 && !Array.from(dislikedItemIds).some(id => outfitIds.has(id))
-    if (avoidsDislikedItems) {
-        bullets.push("Avoids outerwear you previously disliked.")
-    }
-
-    if (
-        outfit.selectionDebug?.wearHistoryAdjustment === 0 &&
-        outfit.selectionDebug.wearHistoryReasons.some(reason => reason.toLowerCase().includes("introduces wardrobe variety"))
-    ) {
-        bullets.push("This outfit introduces wardrobe variety from your worn history.")
-    } else if ((outfit.selectionDebug?.wearHistoryAdjustment || 0) < 0) {
-        const reasonText = outfit.selectionDebug?.wearHistoryReasons.join(" ").toLowerCase() || ""
-        if (reasonText.includes("footwear")) {
-            bullets.push("This recommendation rotates frequently used footwear when close alternatives are available.")
-        } else {
-            bullets.push("This recommendation avoids leaning too heavily on items worn recently.")
-        }
+    if (isLightweightWeather(preferences.weather, outfit)) {
+        bullets.push("Includes lightweight pieces for comfort.")
     }
 
     if (outfit.type === "separates") {
-        bullets.push("Builds a complete outfit with a top, bottom, and footwear.")
+        bullets.push("Creates a complete look with a top, bottom, and footwear.")
     } else {
-        bullets.push("Builds a complete outfit with a dress and footwear.")
+        bullets.push("Creates a complete look with a dress and footwear.")
     }
 
-    bullets.push("Ranked highest among the generated outfit candidates.")
+    bullets.push("Creates a balanced and versatile look.")
 
     return bullets.slice(0, 5)
 }
@@ -695,6 +640,58 @@ function getOutfitItems(outfit: Outfit) {
     return items
 }
 
+function buildPersonalizationReasons(
+    outfit: Outfit,
+    profile: PreferenceProfile | undefined,
+    dislikedItemIds: Set<string>
+) {
+    if (!profile) return []
+
+    const items = getOutfitItems(outfit)
+    const reasons: string[] = []
+
+    const likedStyles = getPositiveNetMatches(
+        items.flatMap(item => item.styles?.length ? item.styles : [item.style]).filter(Boolean),
+        profile.likedStyles,
+        profile.dislikedStyles
+    )
+    if (likedStyles.length > 0) {
+        reasons.push(`You often like ${likedStyles[0]} outfits.`)
+    }
+
+    const likedColors = getPositiveNetMatches(
+        items.map(item => item.color),
+        profile.likedColors,
+        profile.dislikedColors
+    )
+    if (likedColors.length > 0) {
+        reasons.push(`${likedColors.slice(0, 2).join(" and ")} appears frequently in outfits you have liked.`)
+    }
+
+    const outfitIds = new Set(items.map(item => item.id))
+    const avoidsDislikedItems = dislikedItemIds.size > 0 && !Array.from(dislikedItemIds).some(id => outfitIds.has(id))
+    if (avoidsDislikedItems) {
+        reasons.push("This outfit avoids items you previously disliked.")
+    }
+
+    const combinationReason = getPositiveCombinationReason(outfit, profile)
+    if (combinationReason) reasons.push(combinationReason)
+
+    return reasons.slice(0, 4)
+}
+
+function getPositiveCombinationReason(outfit: Outfit, profile: PreferenceProfile) {
+    const ids = getOutfitItems(outfit).map(item => item.id)
+    const likedCombinationKeys = Object.keys(profile.likedCombinations || {})
+    const dislikedCombinationKeys = Object.keys(profile.dislikedCombinations || {})
+    const overlapsLiked = likedCombinationKeys.some(key => ids.some(id => key.includes(id)))
+    const overlapsDisliked = dislikedCombinationKeys.some(key => ids.some(id => key.includes(id)))
+
+    return overlapsLiked && !overlapsDisliked
+        ? "Similar outfit combinations have received positive feedback."
+        : null
+}
+
 function itemMatchesStyle(item: Item, selectedStyle: string) {
     const styles = item.styles?.length ? item.styles : [item.style]
     return styles.some(style => normalizeLabel(style) === normalizeLabel(selectedStyle) || normalizeLabel(style) === "all styles")
@@ -703,28 +700,27 @@ function itemMatchesStyle(item: Item, selectedStyle: string) {
 function getWeatherReason(outfit: Outfit, weather: string) {
     if (weather === "Rainy") {
         if (outfit.outerwear && isRainFriendly(outfit.outerwear)) {
-            return "Suitable for Rainy weather because it includes weather-friendly outerwear."
+            return "Selected for rainy weather with weather-friendly outerwear."
         }
         if (outfit.accessory && normalizeLabel(outfit.accessory.name).includes("umbrella")) {
-            return "Suitable for Rainy weather because it includes umbrella support."
+            return "Selected for rainy weather with umbrella support."
         }
-        return "Selected with your Rainy weather preference in mind."
+        return "Selected for rainy weather."
     }
 
     if ((weather === "Cold" || weather === "Snowy") && outfit.outerwear) {
-        return `Suitable for ${weather} weather because it includes an outer layer.`
+        return `Selected for ${weather} weather with an outer layer.`
     }
 
     if ((weather === "Warm" || weather === "Sunny") && !outfit.outerwear) {
-        return `Suitable for ${weather} weather because it keeps the outfit lightweight.`
+        return `Selected for ${weather} weather with lightweight pieces.`
     }
 
-    return `Selected for your ${weather} weather preference.`
+    return `Selected for ${weather} weather.`
 }
 
 function getLiveWeatherReason(outfit: Outfit, weatherContext?: WeatherContext) {
     if (!weatherContext || weatherContext.source !== "live") return null
-
     const temp = Math.round(weatherContext.temperatureF)
 
     if (weatherContext.mappedWeatherCategory === "Rainy") {
@@ -732,16 +728,16 @@ function getLiveWeatherReason(outfit: Outfit, weatherContext?: WeatherContext) {
     }
 
     if (temp >= 85) {
-        if (outfit.outerwear) return `Balanced for today's ${temp}°F weather while still matching your outfit constraints.`
-        return `Chosen for today's ${temp}°F weather with lighter pieces.`
+        if (outfit.outerwear) return "Balances today's warm weather with your selected style."
+        return "Chosen for today's warm weather with lighter pieces."
     }
 
     if (temp < 50) {
-        if (outfit.outerwear) return `Includes warmer layers because live weather is ${temp}°F.`
-        return `Selected with today's ${temp}°F weather in mind.`
+        if (outfit.outerwear) return "Includes warmer layers for today's weather."
+        return "Selected with today's cooler weather in mind."
     }
 
-    return `Selected for today's ${temp}°F live weather.`
+    return "Selected for today's live weather."
 }
 
 function getColorReason(items: Item[]) {
@@ -759,21 +755,8 @@ function getColorReason(items: Item[]) {
     return `Keeps the color palette focused around ${colors[0]}.`
 }
 
-function getPreferenceReason(items: Item[], profile: PreferenceProfile | undefined) {
-    if (!profile) return null
-
-    const likedColors = getPositiveNetMatches(items.map(item => item.color), profile.likedColors, profile.dislikedColors)
-    if (likedColors.length > 0) {
-        return `Uses ${likedColors.slice(0, 2).join(" and ")}, colors you have liked before.`
-    }
-
-    const styles = items.flatMap(item => item.styles?.length ? item.styles : [item.style]).filter(Boolean)
-    const likedStyles = getPositiveNetMatches(styles, profile.likedStyles, profile.dislikedStyles)
-    if (likedStyles.length > 0) {
-        return `Reflects ${likedStyles[0]}, a style pattern you have liked before.`
-    }
-
-    return null
+function isLightweightWeather(weather: string, outfit: Outfit) {
+    return (weather === "Warm" || weather === "Sunny") && !outfit.outerwear
 }
 
 function getPositiveNetMatches(values: Array<string | undefined>, liked: Record<string, number>, disliked: Record<string, number>) {

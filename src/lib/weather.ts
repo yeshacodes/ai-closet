@@ -32,19 +32,47 @@ type GeolocationCoordinatesResult = {
 
 export async function fetchCurrentWeather(): Promise<CurrentWeatherResult> {
     const position = await getBrowserLocation();
+    console.info("Live weather geolocation", {
+        latitude: position.latitude,
+        longitude: position.longitude
+    });
+
     const params = new URLSearchParams({
         latitude: String(position.latitude),
         longitude: String(position.longitude)
     });
 
-    const response = await fetch(`/api/weather?${params.toString()}`);
+    let response: Response;
+    try {
+        response = await fetch(`/api/weather?${params.toString()}`);
+    } catch (error) {
+        console.error("Live weather API request failed", error);
+        throw new Error("Unable to reach the live weather service. Please choose weather manually.");
+    }
 
     if (!response.ok) {
         const data = await response.json().catch(() => null) as { error?: string } | null;
-        throw new Error(data?.error || "Unable to load live weather.");
+        throw new Error(data?.error || "Unable to load live weather. Please choose weather manually.");
     }
 
-    return response.json() as Promise<CurrentWeatherResult>;
+    const data = await response.json() as CurrentWeatherResult;
+    if (!data || typeof data.temperatureF !== "number" || !data.category) {
+        console.error("Live weather response malformed", data);
+        throw new Error("Live weather response was incomplete. Please choose weather manually.");
+    }
+
+    console.info("Live weather mapped", {
+        latitude: data.latitude,
+        longitude: data.longitude,
+        temperatureF: data.temperatureF,
+        conditionText: data.conditionText,
+        weatherCode: data.weatherCode,
+        precipitation: data.precipitation,
+        rainChanceNext3Hours: data.rainChanceNext3Hours,
+        mappedCategory: data.category
+    });
+
+    return data;
 }
 
 function getBrowserLocation(): Promise<GeolocationCoordinatesResult> {
@@ -58,11 +86,18 @@ function getBrowserLocation(): Promise<GeolocationCoordinatesResult> {
                 latitude: position.coords.latitude,
                 longitude: position.coords.longitude
             }),
-            () => reject(new Error("Location permission was denied or unavailable.")),
+            error => {
+                const reason = error.code === error.PERMISSION_DENIED
+                    ? "Location permission was denied. Please allow location access or choose weather manually."
+                    : error.code === error.TIMEOUT
+                        ? "Location detection timed out. Please try again or choose weather manually."
+                        : "Location is unavailable. Please choose weather manually.";
+                reject(new Error(reason));
+            },
             {
                 enableHighAccuracy: false,
                 timeout: 10000,
-                maximumAge: 10 * 60 * 1000
+                maximumAge: 0
             }
         );
     });
