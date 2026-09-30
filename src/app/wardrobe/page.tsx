@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, type ReactNode } from "react"
+import { useEffect, useRef, useState, type ReactNode } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { ChevronDown, Edit, ImagePlus, Search, Trash2, X } from "lucide-react"
 import { supabase } from "@/lib/supabase"
@@ -14,8 +14,20 @@ import { CLOSET_CATEGORIES } from "@/lib/categories"
 import { getBroadCategoryLabel, getDisplayCategory, getDisplayColor, getDisplayItemName, formatStyleLabel, formatWeatherLabel } from "@/lib/itemDisplay"
 import { cn } from "@/lib/utils"
 import { useSessionMode } from "@/lib/sessionMode"
-import { getScopeLabel, scopedDelete, scopedSelect, scopedUpdate } from "@/lib/dataScope"
+import {
+    assertCanWritePersonalData,
+    canReadDataScope,
+    canWritePersonalData,
+    getScopeKey,
+    getScopeLabel,
+    scopedDelete,
+    scopedSelect,
+    scopedUpdate
+} from "@/lib/dataScope"
+import { isCurrentOperation } from "@/lib/operationGuard"
 import { PageShell } from "@/components/ui/page-shell"
+import { ClosetImage } from "@/components/ClosetImage"
+import { getClosetObjectPath } from "@/lib/closetImages"
 
 const categories = ["All", ...CLOSET_CATEGORIES]
 const STYLE_OPTIONS = ["Casual", "Smart Casual", "Formal", "Party / Dressy", "Sporty / Athleisure", "Streetwear"]
@@ -55,10 +67,59 @@ export default function WardrobePage() {
     const [editError, setEditError] = useState<string | null>(null)
     const [editSuccess, setEditSuccess] = useState<string | null>(null)
     const [advancedOpen, setAdvancedOpen] = useState(false)
+    const scopeKey = getScopeKey(scope)
+    const latestScopeKey = useRef(scopeKey)
+    const deleteOperationRef = useRef(0)
+    const editOperationRef = useRef(0)
 
     useEffect(() => {
-        if (!scope.isLoading) fetchItems()
-    }, [scope.isLoading, scope.mode, scope.userId])
+        latestScopeKey.current = scopeKey
+        deleteOperationRef.current += 1
+        editOperationRef.current += 1
+        setSavingEdit(false)
+    }, [scopeKey])
+
+    useEffect(() => {
+        setItems([])
+        setEditingItem(null)
+        setEditForm(null)
+        setEditError(null)
+        setEditSuccess(null)
+
+        if (scope.isLoading || !scope.isHydrated) {
+            setLoading(true)
+            return
+        }
+
+        if (!canReadDataScope(scope)) {
+            setLoading(false)
+            return
+        }
+
+        let cancelled = false
+        const loadItems = async () => {
+            try {
+                setLoading(true)
+                const { data, error } = await scopedSelect('items', scope)
+                    .order('created_at', { ascending: false })
+
+                if (cancelled) return
+                if (error) throw error
+                setItems((data || []) as Item[])
+            } catch (error) {
+                if (!cancelled) {
+                    console.error('Error fetching items:', error)
+                }
+            } finally {
+                if (!cancelled) setLoading(false)
+            }
+        }
+
+        loadItems()
+        return () => {
+            cancelled = true
+        }
+    }, [scope.isLoading, scope.isHydrated, scopeKey])
 
     useEffect(() => {
         if (!editingItem) return
@@ -76,32 +137,24 @@ export default function WardrobePage() {
         return () => document.removeEventListener("keydown", handleKeyDown)
     }, [editingItem, savingEdit])
 
-    const fetchItems = async () => {
-        try {
-            const { data, error } = await scopedSelect('items', scope)
-                .order('created_at', { ascending: false })
-
-            if (error) throw error
-            setItems((data || []) as Item[])
-        } catch (error) {
-            console.error('Error fetching items:', error)
-        } finally {
-            setLoading(false)
-        }
-    }
-
     const deleteItem = async (id: string, imageUrl: string) => {
-        if (scope.isDemo) {
+        if (!canWritePersonalData(scope)) {
             alert(DEMO_ITEM_MANAGEMENT_MESSAGE)
             return
         }
         if (!confirm("Are you sure you want to delete this item?")) return
 
+        const operationId = deleteOperationRef.current + 1
+        deleteOperationRef.current = operationId
+        const token = { scopeKey, operationId }
+        const activeScope = scope
+
         try {
+            assertCanWritePersonalData(activeScope)
             // 1. Delete from Storage
-            const fileName = imageUrl.split('/').pop()
-            if (fileName) {
-                const { error: storageError } = await supabase.storage.from('closet').remove([fileName])
+            const storagePath = getClosetObjectPath(imageUrl)
+            if (storagePath) {
+                const { error: storageError } = await supabase.storage.from('closet').remove([storagePath])
                 if (storageError) {
                     console.error('Storage delete error:', storageError)
                     // Continue to DB delete even if storage fails
@@ -110,31 +163,34 @@ export default function WardrobePage() {
 
             // 2. Delete from DB (Manual Cascade for safety)
             // We delete related records first to avoid foreign key constraint errors if ON DELETE CASCADE isn't set in DB
-            await scopedDelete('outfit_feedback', scope).or(`top_id.eq.${id},bottom_id.eq.${id},footwear_id.eq.${id}`)
-            await scopedDelete('outfit_history', scope).or(`top_id.eq.${id},bottom_id.eq.${id},dress_id.eq.${id},footwear_id.eq.${id},outerwear_id.eq.${id}`)
-            await scopedDelete('ai_prediction_logs', scope).eq('item_id', id)
+            await scopedDelete('outfit_feedback', activeScope).or(`top_id.eq.${id},bottom_id.eq.${id},footwear_id.eq.${id}`)
+            await scopedDelete('outfit_history', activeScope).or(`top_id.eq.${id},bottom_id.eq.${id},dress_id.eq.${id},footwear_id.eq.${id},outerwear_id.eq.${id}`)
+            await scopedDelete('ai_prediction_logs', activeScope).eq('item_id', id)
 
             // 3. Delete Item
-            const { error: deleteError } = await scopedDelete('items', scope).eq('id', id)
+            const { error: deleteError } = await scopedDelete('items', activeScope).eq('id', id)
 
             if (deleteError) {
+                if (!isCurrentOperation(token, latestScopeKey.current, deleteOperationRef.current)) return
                 console.error('Supabase delete error (raw):', deleteError);
                 console.error('Tried to delete item with id:', id);
                 alert('Failed to delete item');
                 return;
             }
 
+            if (!isCurrentOperation(token, latestScopeKey.current, deleteOperationRef.current)) return
             // 4. Update State (Only on success)
             setItems(prev => prev.filter(item => item.id !== id))
 
         } catch (error) {
+            if (!isCurrentOperation(token, latestScopeKey.current, deleteOperationRef.current)) return
             console.error('Unexpected error deleting item:', error)
             alert('Failed to delete item')
         }
     }
 
     const openEditModal = (item: Item) => {
-        if (scope.isDemo) {
+        if (!canWritePersonalData(scope)) {
             alert(DEMO_ITEM_MANAGEMENT_MESSAGE)
             return
         }
@@ -187,7 +243,7 @@ export default function WardrobePage() {
 
     const saveEdit = async () => {
         if (!editingItem || !editForm) return
-        if (scope.isDemo) {
+        if (!canWritePersonalData(scope)) {
             setEditError(DEMO_ITEM_MANAGEMENT_MESSAGE)
             return
         }
@@ -201,7 +257,14 @@ export default function WardrobePage() {
             return
         }
 
+        const operationId = editOperationRef.current + 1
+        editOperationRef.current = operationId
+        const token = { scopeKey, operationId }
+        const activeScope = scope
+        const activeEditingItem = editingItem
+
         try {
+            assertCanWritePersonalData(activeScope)
             setSavingEdit(true)
             setEditError(null)
             setEditSuccess(null)
@@ -220,12 +283,13 @@ export default function WardrobePage() {
                 description: editForm.description.trim()
             }
 
-            const updateQuery = scopedUpdate("items", updateData as Record<string, unknown>, scope)
-                .eq("id", editingItem.id)
+            const updateQuery = scopedUpdate("items", updateData as Record<string, unknown>, activeScope)
+                .eq("id", activeEditingItem.id)
                 .select("*")
             const { data, error } = await updateQuery.single()
 
             if (error) throw error
+            if (!isCurrentOperation(token, latestScopeKey.current, editOperationRef.current)) return
 
             const updatedItem = data as Item
             setItems(prev => prev.map(item => item.id === updatedItem.id ? updatedItem : item))
@@ -241,11 +305,14 @@ export default function WardrobePage() {
             })
             setEditSuccess("Item updated. Recommendations will use the new metadata.")
         } catch (err: unknown) {
+            if (!isCurrentOperation(token, latestScopeKey.current, editOperationRef.current)) return
             const errorInfo = err as { message?: string }
             console.error("Error updating wardrobe item:", err)
             setEditError(errorInfo.message || "Failed to update item.")
         } finally {
-            setSavingEdit(false)
+            if (isCurrentOperation(token, latestScopeKey.current, editOperationRef.current)) {
+                setSavingEdit(false)
+            }
         }
     }
 
@@ -328,8 +395,8 @@ export default function WardrobePage() {
                             >
                                 <Card className="fashion-card-hover group flex h-auto flex-col overflow-hidden">
                                     <div className="relative flex h-64 items-center justify-center bg-zinc-950/70 md:h-72">
-                                        <img
-                                            src={item.image_url}
+                                        <ClosetImage
+                                            item={item}
                                             alt={getDisplayItemName(item)}
                                             className="object-contain w-full h-full p-3 transition-transform group-hover:scale-105"
                                         />
@@ -396,8 +463,8 @@ export default function WardrobePage() {
                         <div className="grid min-h-0 flex-1 overflow-y-auto lg:grid-cols-[320px_1fr]">
                             <aside className="border-b border-white/10 bg-zinc-900/80 p-5 lg:border-b-0 lg:border-r lg:p-6">
                                 <div className="flex h-80 items-center justify-center rounded-xl border border-white/10 bg-black/40">
-                                    <img
-                                        src={editingItem.image_url}
+                                    <ClosetImage
+                                        item={editingItem}
                                         alt={editForm.name}
                                         className="h-full w-full object-contain p-4"
                                     />

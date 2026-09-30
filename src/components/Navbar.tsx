@@ -1,9 +1,9 @@
 "use client"
 
 import Link from "next/link"
-import { usePathname } from "next/navigation"
+import { usePathname, useRouter } from "next/navigation"
 import { motion } from "framer-motion"
-import { Shirt, Upload, Sparkles, Menu, X, Activity, History, LogOut, UserCircle } from "lucide-react"
+import { Shirt, Upload, Sparkles, Menu, X, History, LogOut, UserCircle } from "lucide-react"
 import { useState } from "react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -14,7 +14,6 @@ const appNavItems = [
     { name: "Upload Item", href: "/upload", icon: Upload },
     { name: "Outfit Generator", href: "/generator", icon: Sparkles },
     { name: "History", href: "/history", icon: History },
-    { name: "Evaluation", href: "/evaluation", icon: Activity },
 ]
 
 const appRoutes = new Set(["/wardrobe", "/upload", "/generator", "/history", "/evaluation"])
@@ -26,11 +25,20 @@ const landingNavItems = [
 
 export function Navbar() {
     const pathname = usePathname()
+    const router = useRouter()
     const [isOpen, setIsOpen] = useState(false)
     const { isDemo, hasChosenDemo, isAuthenticated, isHydrated, user, signOut, isLoading, useDemoMode: activateDemoMode } = useSessionMode()
     const isAppRoute = appRoutes.has(pathname)
-    const showAppNav = isAppRoute && isHydrated && (isAuthenticated || hasChosenDemo)
+    const isLandingPage = pathname === "/"
+    const showAppNav = isHydrated && isAppRoute && (isAuthenticated || hasChosenDemo)
     const visibleNavItems = showAppNav ? appNavItems : landingNavItems
+    const showSignedInControls = isHydrated && isAuthenticated
+    const showDemoControls = isHydrated && isDemo
+    const handleSignOut = async () => {
+        await signOut()
+        setIsOpen(false)
+        router.replace("/")
+    }
 
     return (
         <nav className="sticky top-0 z-50 w-full border-b border-white/10 bg-black/75 text-white backdrop-blur-xl supports-[backdrop-filter]:bg-black/65">
@@ -68,16 +76,28 @@ export function Navbar() {
                             </Link>
                         )
                     })}
-                    {!showAppNav ? (
+                    {showSignedInControls ? (
                         <>
-                            <Link href="/wardrobe" onClick={activateDemoMode}>
-                                <Button size="sm">Try Demo</Button>
-                            </Link>
-                            <Link href="/auth">
-                                <Button size="sm" variant="outline">Sign In</Button>
-                            </Link>
+                            {isLandingPage && (
+                                <>
+                                    <Link href="/wardrobe">
+                                        <Button size="sm">My Wardrobe</Button>
+                                    </Link>
+                                    <Link href="/wardrobe" onClick={activateDemoMode}>
+                                        <Button size="sm" variant="outline">Try Demo</Button>
+                                    </Link>
+                                </>
+                            )}
+                            <div className="hidden max-w-[220px] items-center gap-2 truncate rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs text-muted-foreground xl:flex">
+                                <UserCircle className="h-4 w-4 shrink-0" />
+                                <span className="truncate">{user?.email}</span>
+                            </div>
+                            <Button size="sm" variant="outline" onClick={handleSignOut} disabled={isLoading}>
+                                <LogOut className="mr-2 h-4 w-4" />
+                                Sign Out
+                            </Button>
                         </>
-                    ) : isDemo ? (
+                    ) : showDemoControls ? (
                         <>
                             <span className="rounded-full border border-primary/35 bg-primary/10 px-3 py-1 text-xs font-medium text-primary">
                                 Demo Closet
@@ -88,14 +108,12 @@ export function Navbar() {
                         </>
                     ) : (
                         <>
-                            <div className="flex max-w-[220px] items-center gap-2 truncate rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs text-muted-foreground">
-                                <UserCircle className="h-4 w-4 shrink-0" />
-                                <span className="truncate">{user?.email}</span>
-                            </div>
-                            <Button size="sm" variant="outline" onClick={signOut} disabled={isLoading}>
-                                <LogOut className="mr-2 h-4 w-4" />
-                                Sign Out
-                            </Button>
+                            <Link href="/wardrobe" onClick={activateDemoMode}>
+                                <Button size="sm">Try Demo</Button>
+                            </Link>
+                            <Link href="/auth">
+                                <Button size="sm" variant="outline">Sign In</Button>
+                            </Link>
                         </>
                     )}
                 </div>
@@ -133,16 +151,24 @@ export function Navbar() {
                             )
                         })}
                         <div className="border-t border-white/10 pt-3">
-                            {!showAppNav ? (
-                                <div className="grid gap-2">
-                                    <Link href="/wardrobe" onClick={() => { activateDemoMode(); setIsOpen(false) }}>
-                                        <Button size="sm" className="w-full">Try Demo</Button>
-                                    </Link>
-                                    <Link href="/auth" onClick={() => setIsOpen(false)}>
-                                        <Button size="sm" variant="outline" className="w-full">Sign In</Button>
-                                    </Link>
+                            {showSignedInControls ? (
+                                <div className="space-y-3 text-sm">
+                                    <p className="truncate text-muted-foreground">{user?.email}</p>
+                                    {isLandingPage && (
+                                        <>
+                                            <Link href="/wardrobe" onClick={() => setIsOpen(false)}>
+                                                <Button size="sm" className="w-full">My Wardrobe</Button>
+                                            </Link>
+                                            <Link href="/wardrobe" onClick={() => { activateDemoMode(); setIsOpen(false) }}>
+                                                <Button size="sm" variant="outline" className="w-full">Try Demo</Button>
+                                            </Link>
+                                        </>
+                                    )}
+                                    <Button size="sm" variant="outline" className="w-full" onClick={handleSignOut}>
+                                        Sign Out
+                                    </Button>
                                 </div>
-                            ) : isDemo ? (
+                            ) : showDemoControls ? (
                                 <div className="space-y-3">
                                     <span className="inline-flex rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-xs font-medium text-primary">
                                         Demo Closet
@@ -152,11 +178,13 @@ export function Navbar() {
                                     </Link>
                                 </div>
                             ) : (
-                                <div className="space-y-3 text-sm">
-                                    <p className="truncate text-muted-foreground">{user?.email}</p>
-                                    <Button size="sm" variant="outline" className="w-full" onClick={signOut}>
-                                        Sign Out
-                                    </Button>
+                                <div className="grid gap-2">
+                                    <Link href="/wardrobe" onClick={() => { activateDemoMode(); setIsOpen(false) }}>
+                                        <Button size="sm" className="w-full">Try Demo</Button>
+                                    </Link>
+                                    <Link href="/auth" onClick={() => setIsOpen(false)}>
+                                        <Button size="sm" variant="outline" className="w-full">Sign In</Button>
+                                    </Link>
                                 </div>
                             )}
                         </div>

@@ -15,8 +15,9 @@ import {
 import { buildWardrobeAnalytics, AnalyticsMetric } from "@/lib/wardrobeAnalytics"
 import { getDisplayCategory, getDisplayColor, getDisplayItemName, formatStyleLabel } from "@/lib/itemDisplay"
 import { useSessionMode } from "@/lib/sessionMode"
-import { getScopeLabel, scopedSelect } from "@/lib/dataScope"
+import { canReadDataScope, canWritePersonalData, getScopeKey, getScopeLabel, scopedSelect } from "@/lib/dataScope"
 import { PageShell } from "@/components/ui/page-shell"
+import { ClosetImage } from "@/components/ClosetImage"
 
 export default function OutfitHistoryPage() {
     const scope = useSessionMode()
@@ -24,35 +25,56 @@ export default function OutfitHistoryPage() {
     const [items, setItems] = useState<Item[]>([])
     const [loading, setLoading] = useState(true)
     const [error, setError] = useState<string | null>(null)
+    const scopeKey = getScopeKey(scope)
 
     useEffect(() => {
-        if (!scope.isLoading) loadHistory()
-    }, [scope.isLoading, scope.mode, scope.userId])
+        setHistoryRows([])
+        setItems([])
+        setError(null)
 
-    const loadHistory = async () => {
-        try {
+        if (scope.isLoading || !scope.isHydrated) {
             setLoading(true)
-            setError(null)
-            const [{ data: wardrobeItems, error: itemsError }, rows] = await Promise.all([
-                scopedSelect("items", scope),
-                fetchOutfitHistory(100, scope)
-            ])
-
-            if (itemsError) throw itemsError
-            setItems((wardrobeItems || []) as Item[])
-            setHistoryRows(rows)
-        } catch (err: unknown) {
-            const errorInfo = err as { message?: string }
-            console.error("Error loading outfit history:", err)
-            setError(errorInfo.message || "Unable to load outfit history.")
-        } finally {
-            setLoading(false)
+            return
         }
-    }
+
+        if (!canReadDataScope(scope)) {
+            setLoading(false)
+            return
+        }
+
+        let cancelled = false
+        const loadHistory = async () => {
+            try {
+                setLoading(true)
+                const [{ data: wardrobeItems, error: itemsError }, rows] = await Promise.all([
+                    scopedSelect("items", scope),
+                    fetchOutfitHistory(100, scope)
+                ])
+
+                if (cancelled) return
+                if (itemsError) throw itemsError
+                setItems((wardrobeItems || []) as Item[])
+                setHistoryRows(rows)
+            } catch (err: unknown) {
+                if (!cancelled) {
+                    const errorInfo = err as { message?: string }
+                    console.error("Error loading outfit history:", err)
+                    setError(errorInfo.message || "Unable to load outfit history.")
+                }
+            } finally {
+                if (!cancelled) setLoading(false)
+            }
+        }
+
+        loadHistory()
+        return () => {
+            cancelled = true
+        }
+    }, [scope.isLoading, scope.isHydrated, scopeKey])
 
     const handleDelete = async (id: string) => {
         if (!confirm("Delete this worn outfit entry?")) return
-        if (scope.isDemo) {
+        if (!canWritePersonalData(scope)) {
             alert("Demo mode is read-only. Sign in to save your own changes.")
             return
         }
@@ -205,7 +227,7 @@ function HistoryItemPreview({ item, wornCount }: { item: Item; wornCount: number
     return (
         <div className="min-w-0 rounded-lg border border-white/10 bg-background/60 p-2">
             <div className="flex h-28 items-center justify-center rounded-md bg-muted/50">
-                <img src={item.image_url} alt={getDisplayItemName(item)} className="h-full w-full object-contain p-2" />
+                <ClosetImage item={item} alt={getDisplayItemName(item)} className="h-full w-full object-contain p-2" />
             </div>
             <p className="mt-2 truncate text-xs font-medium">{getDisplayItemName(item)}</p>
             <p className="truncate text-xs text-muted-foreground">{getDisplayCategory(item)}</p>

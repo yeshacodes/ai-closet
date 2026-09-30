@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useRef } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Upload, X, Sparkles } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { supabase } from "@/lib/supabase"
@@ -12,7 +12,8 @@ import { Loader } from "@/components/ui/loader"
 import { predictItemDetails } from "@/utils/heuristics"
 import { CLOSET_CATEGORIES } from "@/lib/categories"
 import { useSessionMode } from "@/lib/sessionMode"
-import { getScopedInsertData } from "@/lib/dataScope"
+import { assertCanWritePersonalData, canWritePersonalData, getScopedInsertData, getScopeKey } from "@/lib/dataScope"
+import { isCurrentOperation } from "@/lib/operationGuard"
 import { PageShell } from "@/components/ui/page-shell"
 
 const categories = [...CLOSET_CATEGORIES]
@@ -64,6 +65,20 @@ export default function UploadPage() {
 
     const [isCustomColor, setIsCustomColor] = useState(false)
     const [uploadedPath, setUploadedPath] = useState<string | null>(null)
+    const scopeKey = getScopeKey(scope)
+    const latestScopeKey = useRef(scopeKey)
+    const aiOperationRef = useRef(0)
+    const uploadOperationRef = useRef(0)
+
+    useEffect(() => {
+        latestScopeKey.current = scopeKey
+        aiOperationRef.current += 1
+        uploadOperationRef.current += 1
+        setUploadedPath(null)
+        predictionRef.current = null
+        setLoading(false)
+        setSimulatingAI(false)
+    }, [scopeKey])
 
     const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const selectedFile = e.target.files?.[0]
@@ -91,24 +106,33 @@ export default function UploadPage() {
 
     const handleSmartAI = async () => {
         if (!file) return
-        if (scope.isDemo) {
-            setAiNote("Demo mode is read-only. Sign in to save your own changes.")
+        if (!canWritePersonalData(scope)) {
+            setAiNote("Sign in to save and analyze your own wardrobe items.")
             return
         }
+        const operationId = aiOperationRef.current + 1
+        aiOperationRef.current = operationId
+        const token = { scopeKey, operationId }
+        const activeScope = scope
+        const activeFile = file
+        const activeUploadedPath = uploadedPath
+        const activeFormData = formData
+
         setSimulatingAI(true)
         setAiNote("Analyzing image with OpenAI Vision...")
 
         try {
+            assertCanWritePersonalData(activeScope)
             // 1. Upload temporarily to get a URL for OpenAI
-            let currentPath = uploadedPath
+            let currentPath = activeUploadedPath
             if (!currentPath) {
-                const fileExt = file.name.split('.').pop()
-                currentPath = `${scope.userId || "user"}/${Math.random()}.${fileExt}`
+                currentPath = getPersonalStoragePath(activeFile, activeScope.userId!)
                 const { error: uploadError } = await supabase.storage
                     .from('closet')
-                    .upload(currentPath, file)
+                    .upload(currentPath, activeFile)
 
                 if (uploadError) throw uploadError
+                if (!isCurrentOperation(token, latestScopeKey.current, aiOperationRef.current)) return
                 setUploadedPath(currentPath)
             }
 
@@ -118,6 +142,7 @@ export default function UploadPage() {
                 .createSignedUrl(currentPath, 600) // 10 mins
 
             if (signedError) throw signedError
+            if (!isCurrentOperation(token, latestScopeKey.current, aiOperationRef.current)) return
 
             // 3. Call our server-side API
             const response = await fetch("/api/ai/predict-item", {
@@ -126,8 +151,8 @@ export default function UploadPage() {
                 body: JSON.stringify({
                     image_url: signedData.signedUrl,
                     hints: {
-                        name: formData.name,
-                        category: formData.category
+                        name: activeFormData.name,
+                        category: activeFormData.category
                     }
                 })
             })
@@ -153,6 +178,7 @@ export default function UploadPage() {
                 throw new Error("Invalid response from AI server (not JSON)");
             }
             console.log("[AI Prediction Success]:", aiData)
+            if (!isCurrentOperation(token, latestScopeKey.current, aiOperationRef.current)) return
 
             // 4. Merge AI Results (Non-destructive)
             setFormData(prev => ({
@@ -197,9 +223,10 @@ export default function UploadPage() {
 
         } catch (error) {
             console.error("Smart AI analysis failed, falling back to heuristics:", error)
+            if (!isCurrentOperation(token, latestScopeKey.current, aiOperationRef.current)) return
 
             // 7. Robust Fallback to Heuristics
-            const heuristicResult = predictItemDetails(file.name, formData.name, formData.category)
+            const heuristicResult = predictItemDetails(activeFile.name, activeFormData.name, activeFormData.category)
 
             setFormData(prev => ({
                 ...prev,
@@ -221,7 +248,9 @@ export default function UploadPage() {
                 ...heuristicResult
             }
         } finally {
-            setSimulatingAI(false)
+            if (isCurrentOperation(token, latestScopeKey.current, aiOperationRef.current)) {
+                setSimulatingAI(false)
+            }
         }
     }
 
@@ -254,44 +283,52 @@ export default function UploadPage() {
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault()
         if (!file) return
-        if (scope.isDemo) {
-            alert("Demo mode is read-only. Sign in to save your own changes.")
+        if (!canWritePersonalData(scope)) {
+            alert("Sign in to save changes to your personal closet.")
             return
         }
 
+        const operationId = uploadOperationRef.current + 1
+        uploadOperationRef.current = operationId
+        const token = { scopeKey, operationId }
+        const activeScope = scope
+        const activeFile = file
+        const activeFormData = formData
+        const activePrediction = predictionRef.current
+        const activeUploadedPath = uploadedPath
+
         setLoading(true)
         try {
+            assertCanWritePersonalData(activeScope)
             // 1. Finalize Image Upload
-            let fileName = uploadedPath
+            let fileName = activeUploadedPath
             if (!fileName) {
-                const fileExt = file.name.split('.').pop()
-                fileName = `${scope.userId || "user"}/${Math.random()}.${fileExt}`
+                fileName = getPersonalStoragePath(activeFile, activeScope.userId!)
                 const { error: uploadError } = await supabase.storage
                     .from('closet')
-                    .upload(fileName, file)
+                    .upload(fileName, activeFile)
 
                 if (uploadError) throw uploadError
             }
+            if (!isCurrentOperation(token, latestScopeKey.current, uploadOperationRef.current)) return
 
             // 2. Get Public URL
-            const { data: { publicUrl } } = supabase.storage
-                .from('closet')
-                .getPublicUrl(fileName)
-
-            // 3. Save Metadata
+            // 2. Save Metadata. Store the object path, not a public URL; display code signs personal images.
             const { data: itemData, error: dbError } = await supabase
                 .from('items')
                 .insert(getScopedInsertData({
-                    name: formData.name,
-                    category: formData.category,
-                    color: formData.color,
-                    style: formData.styles[0] || "", // Deprecated field fallback
-                    styles: formData.styles, // New field
-                    weather: formData.weather,
-                    description: formData.description,
-                    image_url: publicUrl,
-                    tags: [formData.category, ...formData.styles, ...formData.weather, formData.color]
-                }, scope))
+                    name: activeFormData.name,
+                    category: activeFormData.category,
+                    color: activeFormData.color,
+                    style: activeFormData.styles[0] || "", // Deprecated field fallback
+                    styles: activeFormData.styles, // New field
+                    weather: activeFormData.weather,
+                    description: activeFormData.description,
+                    image_url: fileName,
+                    image_storage_path: fileName,
+                    image_bucket: "closet",
+                    tags: [activeFormData.category, ...activeFormData.styles, ...activeFormData.weather, activeFormData.color]
+                }, activeScope))
                 .select()
                 .single()
 
@@ -304,31 +341,32 @@ export default function UploadPage() {
                 });
                 throw dbError;
             }
+            if (!isCurrentOperation(token, latestScopeKey.current, uploadOperationRef.current)) return
 
             // 4. Log Prediction vs Actual (if prediction was made)
-            if (predictionRef.current && itemData) {
+            if (activePrediction && itemData) {
                 const { error: logError } = await supabase.from('ai_prediction_logs').insert(getScopedInsertData({
                     item_id: itemData.id,
-                    predicted_category: predictionRef.current.category,
-                    predicted_style: predictionRef.current.styles ? predictionRef.current.styles.join(", ") : null,
-                    predicted_color: predictionRef.current.color,
-                    predicted_name: predictionRef.current.name,
-                    final_category: formData.category,
-                    final_style: formData.styles.join(", "),
-                    final_color: formData.color,
-                    confidence_score: predictionRef.current.confidence,
+                    predicted_category: activePrediction.category,
+                    predicted_style: activePrediction.styles ? activePrediction.styles.join(", ") : null,
+                    predicted_color: activePrediction.color,
+                    predicted_name: activePrediction.name,
+                    final_category: activeFormData.category,
+                    final_style: activeFormData.styles.join(", "),
+                    final_color: activeFormData.color,
+                    confidence_score: activePrediction.confidence,
                     input_hints: {
-                        filename: file.name,
-                        input_name: formData.name,
-                        vision_label: predictionRef.current.vision_label,
-                        vision_confidence: predictionRef.current.vision_confidence,
-                        source: predictionRef.current.source,
-                        heuristic_color: predictionRef.current.heuristic_color,
-                        detected_color: predictionRef.current.detected_color
+                        filename: activeFile.name,
+                        input_name: activeFormData.name,
+                        vision_label: activePrediction.vision_label,
+                        vision_confidence: activePrediction.vision_confidence,
+                        source: activePrediction.source,
+                        heuristic_color: activePrediction.heuristic_color,
+                        detected_color: activePrediction.detected_color
                     }
-                }, scope))
+                }, activeScope))
 
-                if (logError) {
+                if (logError && isCurrentOperation(token, latestScopeKey.current, uploadOperationRef.current)) {
                     console.error('Supabase logging error:', {
                         message: logError.message,
                         details: logError.details,
@@ -338,15 +376,19 @@ export default function UploadPage() {
                 }
             }
 
+            if (!isCurrentOperation(token, latestScopeKey.current, uploadOperationRef.current)) return
             router.push('/wardrobe')
         } catch (error) {
+            if (!isCurrentOperation(token, latestScopeKey.current, uploadOperationRef.current)) return
             console.error('Error uploading item:', error);
             if (error instanceof Error) {
                 console.error('Error message:', error.message);
             }
             alert('Failed to upload item. Please try again.')
         } finally {
-            setLoading(false)
+            if (isCurrentOperation(token, latestScopeKey.current, uploadOperationRef.current)) {
+                setLoading(false)
+            }
         }
     }
 
@@ -357,9 +399,11 @@ export default function UploadPage() {
                     <p className="fashion-eyebrow">Closet intake</p>
                     <CardTitle className="text-3xl font-semibold tracking-tight">Add New Item</CardTitle>
                     <CardDescription>
-                        {scope.isDemo
-                            ? "You're exploring the Demo Closet. Create an account to save your own wardrobe items."
-                            : "Upload a photo of your clothing item to add it to your personal wardrobe."}
+                    {scope.isDemo
+                        ? "You're exploring the Demo Closet. Create an account to save your own wardrobe items."
+                        : !scope.canWritePersonalData
+                            ? "Sign in to upload and save your own wardrobe items."
+                        : "Upload a photo of your clothing item to add it to your personal wardrobe."}
                     </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -405,7 +449,7 @@ export default function UploadPage() {
                                     variant="secondary"
                                     className="w-full"
                                     onClick={handleSmartAI}
-                                    disabled={simulatingAI || loading || scope.isDemo}
+                                    disabled={simulatingAI || loading || !scope.canWritePersonalData}
                                 >
                                     {simulatingAI ? (
                                         <>
@@ -591,9 +635,9 @@ export default function UploadPage() {
                             />
                         </div>
 
-                        <Button type="submit" className="w-full" disabled={loading || !file || formData.styles.length === 0 || scope.isDemo}>
+                        <Button type="submit" className="w-full" disabled={loading || !file || formData.styles.length === 0 || !scope.canWritePersonalData}>
                             {loading ? <Loader className="mr-2" /> : null}
-                            {scope.isDemo ? "Create account to save wardrobe items" : loading ? "Uploading..." : "Save to Wardrobe"}
+                            {!scope.canWritePersonalData ? "Sign in to save wardrobe items" : loading ? "Uploading..." : "Save to Wardrobe"}
                         </Button>
 
                     </form>
@@ -601,4 +645,9 @@ export default function UploadPage() {
             </Card>
         </PageShell>
     )
+}
+
+function getPersonalStoragePath(file: File, userId: string) {
+    const fileExt = file.name.split(".").pop() || "jpg"
+    return `${userId}/${crypto.randomUUID()}.${fileExt}`
 }
