@@ -1,20 +1,5 @@
 import type { ActiveUserScope } from "@/lib/sessionMode";
 import { supabase } from "@/lib/supabase";
-import {
-    assertCanReadData,
-    assertCanWritePersonalData,
-    canReadDataScope,
-    canWritePersonalData,
-    getScopeKey
-} from "@/lib/dataScopeCore";
-
-export {
-    assertCanReadData,
-    assertCanWritePersonalData,
-    canReadDataScope,
-    canWritePersonalData,
-    getScopeKey
-};
 
 type QueryBuilder = {
     eq: (column: string, value: string | boolean) => ScopedQuery;
@@ -42,11 +27,7 @@ export function buildScopedQuery(query: QueryBuilder, scope: ActiveUserScope): S
         return query.eq("user_id", scope.userId);
     }
 
-    if (scope.mode === "demo") {
-        return query.eq("is_demo", true);
-    }
-
-    throw new Error("A valid demo or signed-in user scope is required to query wardrobe data.");
+    return query.eq("is_demo", true);
 }
 
 export function scopedSelect(table: string, scope: ActiveUserScope) {
@@ -62,8 +43,9 @@ export function scopedUpdate(table: string, data: Record<string, unknown>, scope
 }
 
 export function getScopedUserFilter(scope: ActiveUserScope) {
-    assertCanWritePersonalData(scope);
-    return { user_id: scope.userId, is_demo: false };
+    return scope.mode === "user" && scope.userId
+        ? { user_id: scope.userId, is_demo: false }
+        : { user_id: null, is_demo: true };
 }
 
 export function getScopedInsertData<T extends Record<string, unknown>>(data: T, scope: ActiveUserScope): T & { user_id: string | null; is_demo: boolean } {
@@ -76,7 +58,5 @@ export function getScopedInsertData<T extends Record<string, unknown>>(data: T, 
 }
 
 export function getScopeLabel(scope: ActiveUserScope) {
-    if (scope.isDemo) return "Demo Closet";
-    if (scope.canWritePersonalData) return "Your Closet";
-    return "Sign in required";
+    return scope.isDemo ? "Demo Closet" : "Your Closet";
 }

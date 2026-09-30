@@ -3,7 +3,6 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react"
 import type { Session, User } from "@supabase/supabase-js"
 import { supabase } from "@/lib/supabase"
-import { resolveStartupMode } from "@/lib/sessionModeCore"
 
 export type AppMode = "visitor" | "demo" | "user"
 
@@ -15,8 +14,6 @@ export type ActiveUserScope = {
     isLoading: boolean
     isHydrated: boolean
     hasChosenDemo: boolean
-    canReadData: boolean
-    canWritePersonalData: boolean
 }
 
 type SessionModeContextValue = ActiveUserScope & {
@@ -38,25 +35,20 @@ export function SessionModeProvider({ children }: { children: ReactNode }) {
     const [isHydrated, setIsHydrated] = useState(false)
 
     useEffect(() => {
-        let isMounted = true
-
         queueMicrotask(() => {
-            if (!isMounted) return
             const storedMode = window.localStorage.getItem(MODE_STORAGE_KEY)
-            if (storedMode === "demo" || storedMode === "visitor" || storedMode === "user") {
+            if (storedMode === "demo" || storedMode === "visitor") {
                 setMode(storedMode)
             }
             setIsHydrated(true)
         })
 
         supabase.auth.getSession().then(({ data }) => {
-            if (!isMounted) return
             const currentStoredMode = window.localStorage.getItem(MODE_STORAGE_KEY)
             setSession(data.session)
-            const startupMode = resolveStartupMode(currentStoredMode, Boolean(data.session))
-            setMode(startupMode)
-            if (startupMode !== currentStoredMode) {
-                window.localStorage.setItem(MODE_STORAGE_KEY, startupMode)
+            if (!data.session && currentStoredMode === "user") {
+                setMode("visitor")
+                window.localStorage.setItem(MODE_STORAGE_KEY, "visitor")
             }
             setIsLoading(false)
         })
@@ -78,10 +70,7 @@ export function SessionModeProvider({ children }: { children: ReactNode }) {
             setIsLoading(false)
         })
 
-        return () => {
-            isMounted = false
-            authListener.subscription.unsubscribe()
-        }
+        return () => authListener.subscription.unsubscribe()
     }, [])
 
     const value = useMemo<SessionModeContextValue>(() => {
@@ -91,13 +80,11 @@ export function SessionModeProvider({ children }: { children: ReactNode }) {
         return {
             mode: effectiveMode,
             userId: effectiveMode === "user" ? user?.id || null : null,
-            isDemo: effectiveMode === "demo",
+            isDemo: effectiveMode !== "user",
             isAuthenticated: Boolean(user),
             isLoading,
             isHydrated,
             hasChosenDemo: effectiveMode === "demo",
-            canReadData: effectiveMode === "demo" || (effectiveMode === "user" && Boolean(user?.id)),
-            canWritePersonalData: effectiveMode === "user" && Boolean(user?.id),
             user,
             session,
             useDemoMode: () => {

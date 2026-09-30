@@ -9,9 +9,5 @@ export type Item = {
     weather?: string[]
     tags: string[]
     image_url: string
-    image_storage_path?: string | null
-    image_bucket?: string | null
-    is_demo?: boolean | null
-    user_id?: string | null
     description: string
 }

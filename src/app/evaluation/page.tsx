@@ -6,7 +6,7 @@ import { Loader } from "@/components/ui/loader"
 import { BarChart3, Brain, CheckCircle2, Database, Info, ThumbsUp, TrendingUp, type LucideIcon } from "lucide-react"
 import { Item } from "@/types"
 import { useSessionMode } from "@/lib/sessionMode"
-import { canReadDataScope, getScopeKey, getScopeLabel, scopedSelect } from "@/lib/dataScope"
+import { getScopeLabel, scopedSelect } from "@/lib/dataScope"
 import { PageShell } from "@/components/ui/page-shell"
 
 type FeedbackRow = {
@@ -112,16 +112,14 @@ export default function EvaluationPage() {
     const [showRawCounts, setShowRawCounts] = useState(false)
     const [showTechnicalDetails, setShowTechnicalDetails] = useState(false)
     const [loading, setLoading] = useState(true)
-    const scopeKey = getScopeKey(scope)
 
-    const fetchEvaluationData = useCallback(async (isCancelled: () => boolean = () => false) => {
+    const fetchEvaluationData = useCallback(async () => {
         try {
             const [{ data: feedbackData, error: feedbackError }, { data: itemData, error: itemError }] = await Promise.all([
                 scopedSelect("outfit_feedback", scope),
                 scopedSelect("items", scope)
             ])
 
-            if (isCancelled()) return
             if (feedbackError) throw feedbackError
             if (itemError) throw itemError
 
@@ -131,33 +129,15 @@ export default function EvaluationPage() {
             setMetrics(buildMetrics(feedbackRows))
             setPreferences(buildPreferenceSummary(feedbackRows, wardrobeItems))
         } catch (error) {
-            if (!isCancelled()) console.error("Error fetching evaluation metrics:", error)
+            console.error("Error fetching evaluation metrics:", error)
         } finally {
-            if (!isCancelled()) setLoading(false)
+            setLoading(false)
         }
-    }, [scope, scopeKey])
+    }, [scope.mode, scope.userId])
 
     useEffect(() => {
-        setMetrics(emptyMetrics)
-        setPreferences(emptyPreferences)
-
-        if (scope.isLoading || !scope.isHydrated) {
-            setLoading(true)
-            return
-        }
-
-        if (!canReadDataScope(scope)) {
-            setLoading(false)
-            return
-        }
-
-        let cancelled = false
-        setLoading(true)
-        fetchEvaluationData(() => cancelled)
-        return () => {
-            cancelled = true
-        }
-    }, [fetchEvaluationData, scope.isLoading, scope.isHydrated])
+        if (!scope.isLoading) fetchEvaluationData()
+    }, [fetchEvaluationData, scope.isLoading])
 
     if (loading) {
         return <div className="flex justify-center p-20"><Loader className="h-8 w-8" /></div>

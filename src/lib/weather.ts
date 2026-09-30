@@ -30,27 +30,6 @@ type GeolocationCoordinatesResult = {
     longitude: number;
 }
 
-export type WeatherLocationErrorReason = "permission-denied" | "timeout" | "unavailable";
-
-export class WeatherLocationError extends Error {
-    reason: WeatherLocationErrorReason;
-    isExpectedWeatherFailure = true;
-
-    constructor(reason: WeatherLocationErrorReason, message: string) {
-        super(message);
-        this.name = "WeatherLocationError";
-        this.reason = reason;
-    }
-}
-
-export function isExpectedWeatherFailure(error: unknown): error is WeatherLocationError {
-    return error instanceof WeatherLocationError ||
-        (typeof error === "object" &&
-            error !== null &&
-            "isExpectedWeatherFailure" in error &&
-            (error as { isExpectedWeatherFailure?: unknown }).isExpectedWeatherFailure === true);
-}
-
 export async function fetchCurrentWeather(): Promise<CurrentWeatherResult> {
     const position = await getBrowserLocation();
     console.info("Live weather geolocation", {
@@ -98,10 +77,7 @@ export async function fetchCurrentWeather(): Promise<CurrentWeatherResult> {
 
 function getBrowserLocation(): Promise<GeolocationCoordinatesResult> {
     if (typeof navigator === "undefined" || !navigator.geolocation) {
-        return Promise.reject(new WeatherLocationError(
-            "unavailable",
-            "Browser location is unavailable. Choose weather manually to keep generating outfits."
-        ));
+        return Promise.reject(new Error("Browser location is unavailable."));
     }
 
     return new Promise((resolve, reject) => {
@@ -111,26 +87,12 @@ function getBrowserLocation(): Promise<GeolocationCoordinatesResult> {
                 longitude: position.coords.longitude
             }),
             error => {
-                if (error.code === error.PERMISSION_DENIED) {
-                    reject(new WeatherLocationError(
-                        "permission-denied",
-                        "Location permission was denied. Choose weather manually to keep generating outfits."
-                    ));
-                    return;
-                }
-
-                if (error.code === error.TIMEOUT) {
-                    reject(new WeatherLocationError(
-                        "timeout",
-                        "Location detection timed out. Choose weather manually or try current weather again."
-                    ));
-                    return;
-                }
-
-                reject(new WeatherLocationError(
-                    "unavailable",
-                    "Location is unavailable. Choose weather manually to keep generating outfits."
-                ));
+                const reason = error.code === error.PERMISSION_DENIED
+                    ? "Location permission was denied. Please allow location access or choose weather manually."
+                    : error.code === error.TIMEOUT
+                        ? "Location detection timed out. Please try again or choose weather manually."
+                        : "Location is unavailable. Please choose weather manually.";
+                reject(new Error(reason));
             },
             {
                 enableHighAccuracy: false,

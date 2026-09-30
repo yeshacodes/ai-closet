@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useState, useEffect } from "react"
 import { motion } from "framer-motion"
 import { CheckCircle2, Sparkles, ThumbsUp, ThumbsDown, AlertCircle } from "lucide-react"
 import { supabase } from "@/lib/supabase"
@@ -19,21 +19,11 @@ import {
     saveOutfitHistory
 } from "@/lib/outfitHistory"
 import { getDisplayColor, getDisplayItemName } from "@/lib/itemDisplay"
-import { fetchCurrentWeather, CurrentWeatherResult, isExpectedWeatherFailure } from "@/lib/weather"
+import { fetchCurrentWeather, CurrentWeatherResult } from "@/lib/weather"
 import { getWeatherBadgeIcon } from "@/lib/weatherMapping"
 import { useSessionMode } from "@/lib/sessionMode"
-import {
-    assertCanWritePersonalData,
-    canReadDataScope,
-    canWritePersonalData,
-    getScopedInsertData,
-    getScopeKey,
-    getScopeLabel,
-    scopedSelect
-} from "@/lib/dataScope"
-import { canSaveScopedResource, isCurrentOperation } from "@/lib/operationGuard"
+import { getScopedInsertData, getScopeLabel, scopedSelect } from "@/lib/dataScope"
 import { EmptyState, PageShell } from "@/components/ui/page-shell"
-import { ClosetImage } from "@/components/ClosetImage"
 
 const weathers = ["Sunny", "Rainy", "Cold", "Warm", "Snowy"]
 const occasions = ["Casual", "Smart Casual", "Formal", "Party / Dressy", "Sporty / Athleisure", "Streetwear"]
@@ -45,7 +35,6 @@ export default function GeneratorPage() {
     const [loading, setLoading] = useState(true)
     const [generating, setGenerating] = useState(false)
     const [outfit, setOutfit] = useState<Outfit | null>(null)
-    const [outfitScopeKey, setOutfitScopeKey] = useState<string | null>(null)
     const [error, setError] = useState<string | null>(null)
     const [feedbackGiven, setFeedbackGiven] = useState(false)
     const [wornSaving, setWornSaving] = useState(false)
@@ -64,12 +53,6 @@ export default function GeneratorPage() {
         weather: "Sunny",
         occasion: "Casual"
     })
-    const scopeKey = getScopeKey(scope)
-    const latestScopeKey = useRef(scopeKey)
-    const generationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-    const generationOperationRef = useRef(0)
-    const feedbackOperationRef = useRef(0)
-    const wornOperationRef = useRef(0)
     const activeWeatherContext: WeatherContext | undefined = liveWeather
         ? {
             temperatureF: liveWeather.temperatureF,
@@ -90,90 +73,37 @@ export default function GeneratorPage() {
     const recommender = new HybridRecommender()
 
     useEffect(() => {
-        latestScopeKey.current = scopeKey
-        generationOperationRef.current += 1
-        feedbackOperationRef.current += 1
-        wornOperationRef.current += 1
-        if (generationTimeoutRef.current) {
-            clearTimeout(generationTimeoutRef.current)
-            generationTimeoutRef.current = null
-        }
-        setGenerating(false)
+        if (!scope.isLoading) fetchItems()
+    }, [scope.isLoading, scope.mode, scope.userId])
 
-        return () => {
-            if (generationTimeoutRef.current) {
-                clearTimeout(generationTimeoutRef.current)
-                generationTimeoutRef.current = null
-            }
-            generationOperationRef.current += 1
-            feedbackOperationRef.current += 1
-            wornOperationRef.current += 1
-        }
-    }, [scopeKey])
-
-    useEffect(() => {
-        setItems([])
-        setOutfit(null)
-        setOutfitScopeKey(null)
-        setFeedbackGiven(false)
-        setWornMessage(null)
-        setError(null)
-        setDislikedItemIds(new Set())
-        setPreferenceProfile(undefined)
-        setOutfitHistory([])
-        setWearHistory(undefined)
-
-        if (scope.isLoading || !scope.isHydrated) {
-            setLoading(true)
-            return
-        }
-
-        if (!canReadDataScope(scope)) {
-            setLoading(false)
-            return
-        }
-
-        let cancelled = false
-        const activeScope = scope
-
-        const loadItems = async () => {
-            try {
-                setLoading(true)
-                const { data, error } = await scopedSelect('items', activeScope)
-                if (cancelled) return
-                if (error) throw error
-                const wardrobeItems = (data || []) as Item[]
-                setItems(wardrobeItems)
-                await fetchFeedbackProfile(wardrobeItems, activeScope, () => cancelled)
-                await refreshWearHistory(activeScope, () => cancelled)
-            } catch (error: unknown) {
-                if (!cancelled) console.error('Error fetching items:', error)
-            } finally {
-                if (!cancelled) setLoading(false)
-            }
-        }
-
-        loadItems()
-        return () => {
-            cancelled = true
-        }
-    }, [scope.isLoading, scope.isHydrated, scopeKey])
-
-    const refreshWearHistory = async (activeScope = scope, isCancelled = () => false) => {
+    const fetchItems = async () => {
         try {
-            const rows = await fetchOutfitHistory(100, activeScope)
-            if (isCancelled()) return
-            setOutfitHistory(rows)
-            setWearHistory(buildWearHistoryContext(rows))
-        } catch (error) {
-            if (!isCancelled()) console.error('Error fetching outfit history:', error)
+            const { data, error } = await scopedSelect('items', scope)
+            if (error) throw error
+            const wardrobeItems = (data || []) as Item[]
+            setItems(wardrobeItems)
+            await fetchFeedbackProfile(wardrobeItems)
+            await refreshWearHistory()
+        } catch (error: unknown) {
+            console.error('Error fetching items:', error)
+        } finally {
+            setLoading(false)
         }
     }
 
-    const fetchFeedbackProfile = async (wardrobeItems = items, activeScope = scope, isCancelled = () => false) => {
+    const refreshWearHistory = async () => {
         try {
-            const { data, error } = await scopedSelect('outfit_feedback', activeScope)
-            if (isCancelled()) return
+            const rows = await fetchOutfitHistory(100, scope)
+            setOutfitHistory(rows)
+            setWearHistory(buildWearHistoryContext(rows))
+        } catch (error) {
+            console.error('Error fetching outfit history:', error)
+        }
+    }
+
+    const fetchFeedbackProfile = async (wardrobeItems = items) => {
+        try {
+            const { data, error } = await scopedSelect('outfit_feedback', scope)
 
             if (error) throw error
 
@@ -229,119 +159,88 @@ export default function GeneratorPage() {
 
                 setPreferenceProfile(profile)
                 setDislikedItemIds(dislikedOuterwear)
-            } else {
-                setPreferenceProfile(undefined)
-                setDislikedItemIds(new Set())
             }
         } catch (error) {
-            if (!isCancelled()) console.error('Error fetching feedback profile:', error)
+            console.error('Error fetching feedback profile:', error)
         }
     }
 
     const generateOutfit = () => {
-        const operationId = generationOperationRef.current + 1
-        generationOperationRef.current = operationId
-        const token = { scopeKey, operationId }
-        const activeItems = items
-        const activePreferences = preferences
-        const activeDislikedItemIds = new Set(dislikedItemIds)
-        const activePreferenceProfile = preferenceProfile
-        const activeWearHistory = wearHistory
-        const activeWeather = activeWeatherContext
-
-        if (generationTimeoutRef.current) {
-            clearTimeout(generationTimeoutRef.current)
-            generationTimeoutRef.current = null
-        }
-
         setGenerating(true)
         setError(null)
         setOutfit(null)
-        setOutfitScopeKey(null)
         setFeedbackGiven(false)
         setWornMessage(null)
 
-        generationTimeoutRef.current = setTimeout(() => {
-            if (!isCurrentOperation(token, latestScopeKey.current, generationOperationRef.current)) return
+        setTimeout(() => {
             try {
                 const prefs: Preferences = {
-                    weather: activePreferences.weather as Preferences["weather"],
-                    occasion: activePreferences.occasion as Preferences["occasion"],
-                    penalizedOuterwearIds: Array.from(activeDislikedItemIds),
-                    preferenceProfile: activePreferenceProfile,
-                    wearHistory: activeWearHistory,
-                    weatherContext: activeWeather
+                    weather: preferences.weather as Preferences["weather"],
+                    occasion: preferences.occasion as Preferences["occasion"],
+                    penalizedOuterwearIds: Array.from(dislikedItemIds),
+                    preferenceProfile,
+                    wearHistory,
+                    weatherContext: activeWeatherContext
                 }
-                const result = recommender.generateOutfit(activeItems, prefs)
-
-                if (!isCurrentOperation(token, latestScopeKey.current, generationOperationRef.current)) return
+                const result = recommender.generateOutfit(items, prefs)
 
                 if (!result.success) {
                     setError(result.error || "Failed to generate outfit.")
                 } else if (result.outfit) {
                     setOutfit(result.outfit)
-                    setOutfitScopeKey(token.scopeKey)
                 }
             } catch (err) {
-                if (!isCurrentOperation(token, latestScopeKey.current, generationOperationRef.current)) return
                 console.error(err)
                 setError("An unexpected error occurred while generating the outfit.")
             } finally {
-                if (isCurrentOperation(token, latestScopeKey.current, generationOperationRef.current)) {
-                    generationTimeoutRef.current = null
-                    setGenerating(false)
-                }
+                setGenerating(false)
             }
         }, 600)
     }
 
     const handleFeedback = async (liked: boolean) => {
         if (!outfit) return
-        if (!canSaveScopedResource(outfitScopeKey, scopeKey)) {
-            alert("This outfit belongs to a previous session. Generate a new outfit before saving feedback.")
-            return
-        }
-        if (!canWritePersonalData(scope)) {
+        if (scope.isDemo) {
             alert("Demo mode is read-only. Sign in to save your own changes.")
             return
         }
 
-        const operationId = feedbackOperationRef.current + 1
-        feedbackOperationRef.current = operationId
-        const token = { scopeKey, operationId }
-        const activeScope = scope
-        const activeOutfit = outfit
-        const activePreferences = preferences
-
         try {
-            assertCanWritePersonalData(activeScope)
+            // If disliked, add outerwear to disliked list immediately
+            if (!liked && outfit.outerwear) {
+                setDislikedItemIds(prev => {
+                    const next = new Set(prev)
+                    next.add(outfit.outerwear!.id)
+                    return next
+                })
+            }
 
             // Prepare feedback data based on outfit type
             const personalizationFields: Record<string, unknown> = {
-                base_score_before_preferences: activeOutfit.scoringDetails?.baseScoreBeforePreferences !== undefined ? activeOutfit.scoringDetails.baseScoreBeforePreferences / 100 : null,
-                preference_adjustment: activeOutfit.scoringDetails?.preferenceAdjustment ?? null,
-                final_score_after_preferences: activeOutfit.scoringDetails?.finalScoreAfterPreferences !== undefined ? activeOutfit.scoringDetails.finalScoreAfterPreferences / 100 : activeOutfit.score
+                base_score_before_preferences: outfit.scoringDetails?.baseScoreBeforePreferences !== undefined ? outfit.scoringDetails.baseScoreBeforePreferences / 100 : null,
+                preference_adjustment: outfit.scoringDetails?.preferenceAdjustment ?? null,
+                final_score_after_preferences: outfit.scoringDetails?.finalScoreAfterPreferences !== undefined ? outfit.scoringDetails.finalScoreAfterPreferences / 100 : outfit.score
             }
 
             const feedbackData: Record<string, unknown> = getScopedInsertData({
-                footwear_id: activeOutfit.footwear.id,
-                outerwear_id: activeOutfit.outerwear?.id || null,
-                requested_style: activePreferences.occasion,
-                weather: activePreferences.weather,
+                footwear_id: outfit.footwear.id,
+                outerwear_id: outfit.outerwear?.id || null,
+                requested_style: preferences.occasion,
+                weather: preferences.weather,
                 liked: liked,
-                features: activeOutfit.features,
-                rule_score: activeOutfit.ruleScore,
-                ml_score: activeOutfit.mlScore,
-                final_score: activeOutfit.score,
+                features: outfit.features,
+                rule_score: outfit.ruleScore,
+                ml_score: outfit.mlScore,
+                final_score: outfit.score,
                 ...personalizationFields
-            }, activeScope)
+            }, scope)
 
-            if (activeOutfit.type === 'separates') {
-                feedbackData.top_id = activeOutfit.top.id
-                feedbackData.bottom_id = activeOutfit.bottom.id
+            if (outfit.type === 'separates') {
+                feedbackData.top_id = outfit.top.id
+                feedbackData.bottom_id = outfit.bottom.id
                 feedbackData.outfit_type = 'separates'
             } else {
-                feedbackData.dress_id = activeOutfit.dress.id
+                feedbackData.dress_id = outfit.dress.id
                 feedbackData.outfit_type = 'dress'
             }
 
@@ -355,7 +254,6 @@ export default function GeneratorPage() {
                     message.includes("schema cache")
 
                 if (!isSchemaMismatch) throw error
-                if (!isCurrentOperation(token, latestScopeKey.current, feedbackOperationRef.current)) return
 
                 const fallbackFeedbackData = { ...feedbackData }
                 delete fallbackFeedbackData.base_score_before_preferences
@@ -365,18 +263,9 @@ export default function GeneratorPage() {
                 const { error: fallbackError } = await supabase.from('outfit_feedback').insert(fallbackFeedbackData)
                 if (fallbackError) throw fallbackError
             }
-            if (!isCurrentOperation(token, latestScopeKey.current, feedbackOperationRef.current)) return
-            if (!liked && activeOutfit.outerwear) {
-                setDislikedItemIds(prev => {
-                    const next = new Set(prev)
-                    next.add(activeOutfit.outerwear!.id)
-                    return next
-                })
-            }
             setFeedbackGiven(true)
-            await fetchFeedbackProfile(items, activeScope, () => !isCurrentOperation(token, latestScopeKey.current, feedbackOperationRef.current))
+            await fetchFeedbackProfile()
         } catch (err: unknown) {
-            if (!isCurrentOperation(token, latestScopeKey.current, feedbackOperationRef.current)) return
             const errorInfo = err as { message?: string; details?: string; hint?: string; code?: string }
             console.error("Error saving feedback:", {
                 message: errorInfo.message,
@@ -390,26 +279,14 @@ export default function GeneratorPage() {
 
     const handleMarkAsWorn = async () => {
         if (!outfit) return
-        if (!canSaveScopedResource(outfitScopeKey, scopeKey)) {
-            setWornMessage("This outfit belongs to a previous session. Generate a new outfit before marking it worn.")
-            return
-        }
-        if (!canWritePersonalData(scope)) {
+        if (scope.isDemo) {
             setWornMessage("Demo mode is read-only. Sign in to save your own changes.")
             return
         }
 
-        const operationId = wornOperationRef.current + 1
-        wornOperationRef.current = operationId
-        const token = { scopeKey, operationId }
-        const activeScope = scope
-        const activeOutfit = outfit
-        const activePreferences = preferences
-        const activeHistory = outfitHistory
-
-        const outfitId = getOutfitCombinationId(activeOutfit)
+        const outfitId = getOutfitCombinationId(outfit)
         const duplicateWindowMs = 2 * 60 * 1000
-        const recentDuplicate = activeHistory.some(row =>
+        const recentDuplicate = outfitHistory.some(row =>
             row.outfit_id === outfitId &&
             Date.now() - new Date(row.worn_at).getTime() < duplicateWindowMs
         )
@@ -420,25 +297,20 @@ export default function GeneratorPage() {
         }
 
         try {
-            assertCanWritePersonalData(activeScope)
             setWornSaving(true)
-            const payload = buildOutfitHistoryPayload(activeOutfit, {
-                weather: activePreferences.weather as Preferences["weather"],
-                occasion: activePreferences.occasion as Preferences["occasion"]
+            const payload = buildOutfitHistoryPayload(outfit, {
+                weather: preferences.weather as Preferences["weather"],
+                occasion: preferences.occasion as Preferences["occasion"]
             })
-            await saveOutfitHistory(payload, activeScope)
-            if (!isCurrentOperation(token, latestScopeKey.current, wornOperationRef.current)) return
+            await saveOutfitHistory(payload, scope)
             setWornMessage("Marked as worn. Future recommendations will rotate from this history.")
-            await refreshWearHistory(activeScope, () => !isCurrentOperation(token, latestScopeKey.current, wornOperationRef.current))
+            await refreshWearHistory()
         } catch (err: unknown) {
-            if (!isCurrentOperation(token, latestScopeKey.current, wornOperationRef.current)) return
             const errorInfo = err as { message?: string }
             console.error("Error saving outfit history:", err)
             setWornMessage(errorInfo.message || "Unable to mark outfit as worn.")
         } finally {
-            if (isCurrentOperation(token, latestScopeKey.current, wornOperationRef.current)) {
-                setWornSaving(false)
-            }
+            setWornSaving(false)
         }
     }
 
@@ -468,10 +340,8 @@ export default function GeneratorPage() {
             setWeatherMessage(`${Math.round(currentWeather.temperatureF)} degrees F - ${currentWeather.mappedWeatherCategory} - Live weather`)
             setWeatherMessageType("success")
         } catch (error: unknown) {
+            console.error("Unable to detect weather:", error)
             const errorInfo = error as { message?: string }
-            if (!isExpectedWeatherFailure(error)) {
-                console.error("Unable to detect weather:", error)
-            }
             setLiveWeather(null)
             setWeatherMessage(errorInfo.message || WEATHER_DETECTION_ERROR)
             setWeatherMessageType("error")
@@ -523,41 +393,6 @@ export default function GeneratorPage() {
                             >
                                 {detectingWeather ? "Detecting..." : "Use Current Weather"}
                             </Button>
-                            {weatherMessage && (
-                                <div className="space-y-1">
-                                    <div className={`inline-flex max-w-full items-center rounded-full border px-3 py-1 text-xs ${weatherMessageType === "error"
-                                        ? "border-destructive/30 bg-destructive/10 text-destructive"
-                                        : weatherMessageType === "loading"
-                                            ? "border-white/10 bg-secondary/40 text-muted-foreground"
-                                            : "border-white/10 bg-secondary/50 text-muted-foreground"
-                                        }`}>
-                                        {weatherMessageType === "success" && liveWeather && (
-                                            <span className="mr-1.5">{getWeatherBadgeIcon(liveWeather.category)}</span>
-                                        )}
-                                        <span className="truncate">{weatherMessage}</span>
-                                        {weatherMessageType === "success" && (
-                                            <button
-                                                type="button"
-                                                className="ml-2 border-l border-white/10 pl-2 text-foreground/80 hover:text-foreground"
-                                                onClick={handleUseCurrentWeather}
-                                                disabled={detectingWeather}
-                                            >
-                                                Refresh
-                                            </button>
-                                        )}
-                                    </div>
-                                    {weatherMessageType === "success" && liveWeather?.forecastOverrideApplied && (
-                                        <p className="text-[11px] text-muted-foreground">
-                                            Rain expected within the next few hours
-                                        </p>
-                                    )}
-                                    {weatherMessageType === "success" && !liveWeather?.forecastOverrideApplied && liveWeather?.rainChanceNext3Hours !== undefined && (
-                                        <p className="text-[11px] text-muted-foreground">
-                                            Rain chance next 3h: {Math.round(liveWeather.rainChanceNext3Hours)}%
-                                        </p>
-                                    )}
-                                </div>
-                            )}
                         </div>
                         <div className="space-y-2">
                             <label className="text-sm font-medium">Occasion / Style</label>
@@ -579,6 +414,41 @@ export default function GeneratorPage() {
                             Generate Outfit
                         </Button>
                     </div>
+                    {weatherMessage && (
+                        <div className="mt-4 space-y-1">
+                            <div className={`inline-flex max-w-full items-center rounded-full border px-3 py-1 text-xs ${weatherMessageType === "error"
+                                ? "border-destructive/30 bg-destructive/10 text-destructive"
+                                : weatherMessageType === "loading"
+                                    ? "border-white/10 bg-secondary/40 text-muted-foreground"
+                                    : "border-white/10 bg-secondary/50 text-muted-foreground"
+                                }`}>
+                                {weatherMessageType === "success" && liveWeather && (
+                                    <span className="mr-1.5">{getWeatherBadgeIcon(liveWeather.category)}</span>
+                                )}
+                                <span className="truncate">{weatherMessage}</span>
+                                {weatherMessageType === "success" && (
+                                    <button
+                                        type="button"
+                                        className="ml-2 border-l border-white/10 pl-2 text-foreground/80 hover:text-foreground"
+                                        onClick={handleUseCurrentWeather}
+                                        disabled={detectingWeather}
+                                    >
+                                        Refresh
+                                    </button>
+                                )}
+                            </div>
+                            {weatherMessageType === "success" && liveWeather?.forecastOverrideApplied && (
+                                <p className="text-[11px] text-muted-foreground">
+                                    Rain expected within the next few hours
+                                </p>
+                            )}
+                            {weatherMessageType === "success" && !liveWeather?.forecastOverrideApplied && liveWeather?.rainChanceNext3Hours !== undefined && (
+                                <p className="text-[11px] text-muted-foreground">
+                                    Rain chance next 3h: {Math.round(liveWeather.rainChanceNext3Hours)}%
+                                </p>
+                            )}
+                        </div>
+                    )}
                 </CardContent>
             </Card>
 
@@ -918,7 +788,7 @@ function OutfitCard({ item, label }: { item: Item | null, label: string }) {
             <div className="text-center font-medium text-muted-foreground uppercase tracking-wider text-xs">{label}</div>
             <Card className="h-full overflow-hidden">
                 <div className="relative flex h-64 items-center justify-center bg-zinc-950/70 md:h-72">
-                    <ClosetImage item={item} alt={getDisplayItemName(item)} className="object-contain w-full h-full p-3" />
+                    <img src={item.image_url} alt={getDisplayItemName(item)} className="object-contain w-full h-full p-3" />
                 </div>
                 <CardContent className="p-4">
                     <h3 className="font-semibold">{getDisplayItemName(item)}</h3>

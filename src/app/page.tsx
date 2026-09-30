@@ -1,11 +1,8 @@
 "use client"
 
-import { useEffect } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useSessionMode } from "@/lib/sessionMode";
 import { ArrowRight, CloudSun, Sparkles, Shirt as ShirtIcon, Layers, Brain, Zap } from "lucide-react";
-import { Loader } from "@/components/ui/loader";
 
 const HERO_IMAGE = "https://images.unsplash.com/photo-1558769132-cb1aea458c5e?w=1400&h=900&fit=crop&auto=format";
 const ABOUT_IMAGE = "https://images.unsplash.com/photo-1489987707025-afc232f7ea0f?w=700&h=500&fit=crop&auto=format";
@@ -45,27 +42,7 @@ const techStack = [
 ];
 
 export default function Home() {
-  const router = useRouter();
-  const { isAuthenticated, isDemo, isHydrated, isLoading, useDemoMode: activateDemoMode } = useSessionMode();
-  const checkingSession = isLoading || !isHydrated;
-
-  useEffect(() => {
-    if (checkingSession) return;
-    if (isAuthenticated && !isDemo) {
-      router.replace("/wardrobe");
-    }
-  }, [checkingSession, isAuthenticated, isDemo, router]);
-
-  if (checkingSession || (isAuthenticated && !isDemo)) {
-    return (
-      <main className="flex min-h-[calc(100vh-4rem)] items-center justify-center bg-background text-muted-foreground">
-        <div className="flex items-center gap-3 text-sm">
-          <Loader className="h-5 w-5" />
-          <span>Opening your closet...</span>
-        </div>
-      </main>
-    );
-  }
+  const { useDemoMode: activateDemoMode } = useSessionMode();
 
   return (
     <main className="min-h-screen bg-background text-foreground">
